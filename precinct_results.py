@@ -11,7 +11,8 @@ Based on: https://github.com/openelections/openelections-data-tx/blob/master/sta
 import os
 import glob
 import csv
-from typing import List, Dict, Set, Optional
+from typing import List, Dict, Set, Optional, Tuple
+from difflib import SequenceMatcher
 
 
 # Standard columns that are not vote type columns
@@ -237,6 +238,279 @@ def generate_vote_columns_report(
 
     if verbose:
         print(f"Report written to: {output_file}")
+
+
+def collect_precinct_names(
+    source_directory: str,
+    file_pattern: str,
+    county_filter: Optional[str] = None,
+    verbose: bool = False
+) -> Dict[str, Set[str]]:
+    """
+    Collect all unique precinct names from CSV files, organized by county.
+
+    Args:
+        source_directory: Directory containing county precinct CSV files
+        file_pattern: Glob pattern for matching files (e.g., '20201103*precinct.csv')
+        county_filter: Optional county name to filter by. If None, includes all counties.
+        verbose: If True, print progress messages
+
+    Returns:
+        Dictionary mapping county names to sets of precinct names
+
+    Example:
+        >>> precincts = collect_precinct_names(
+        ...     source_directory='2020/counties',
+        ...     file_pattern='20201103*precinct.csv',
+        ...     county_filter='Travis'
+        ... )
+        >>> print(precincts['Travis'])
+        {'101', '102', '103', ...}
+    """
+    precinct_data = {}
+    original_dir = os.getcwd()
+
+    try:
+        os.chdir(source_directory)
+
+        for fname in glob.glob(file_pattern):
+            if verbose:
+                print(f"Scanning: {fname}")
+
+            with open(fname, 'r') as csvfile:
+                reader = csv.DictReader(csvfile)
+
+                for row in reader:
+                    county = row.get('county', '').strip()
+                    precinct = row.get('precinct', '').strip()
+
+                    if not county or not precinct:
+                        continue
+
+                    # Apply county filter if specified
+                    if county_filter and county.lower() != county_filter.lower():
+                        continue
+
+                    if county not in precinct_data:
+                        precinct_data[county] = set()
+
+                    precinct_data[county].add(precinct)
+
+    finally:
+        os.chdir(original_dir)
+
+    return precinct_data
+
+
+def _calculate_similarity(str1: str, str2: str) -> float:
+    """Calculate similarity ratio between two strings (0.0 to 1.0)."""
+    return SequenceMatcher(None, str1.lower(), str2.lower()).ratio()
+
+
+def _find_similar_precincts(
+    precinct: str,
+    candidates: Set[str],
+    threshold: float = 0.6
+) -> List[Tuple[str, float]]:
+    """
+    Find precincts in candidates that are similar to the given precinct.
+
+    Args:
+        precinct: The precinct name to match
+        candidates: Set of candidate precinct names
+        threshold: Minimum similarity ratio (0.0 to 1.0)
+
+    Returns:
+        List of (precinct_name, similarity_score) tuples, sorted by score descending
+    """
+    matches = []
+    for candidate in candidates:
+        similarity = _calculate_similarity(precinct, candidate)
+        if similarity >= threshold:
+            matches.append((candidate, similarity))
+
+    return sorted(matches, key=lambda x: x[1], reverse=True)
+
+
+def compare_precinct_names(
+    election1_dir: str,
+    election1_pattern: str,
+    election2_dir: str,
+    election2_pattern: str,
+    county_filter: Optional[str] = None,
+    similarity_threshold: float = 0.6,
+    output_file: Optional[str] = None,
+    verbose: bool = True
+) -> Dict[str, Dict]:
+    """
+    Compare precinct names between two elections for a given county or statewide.
+
+    This function identifies:
+    - Precincts that exist only in election 1 (removed/renamed)
+    - Precincts that exist only in election 2 (new/renamed)
+    - Precincts that exist in both elections (unchanged)
+    - Potential renames based on name similarity
+
+    Args:
+        election1_dir: Directory containing first election's CSV files
+        election1_pattern: Glob pattern for first election files
+        election2_dir: Directory containing second election's CSV files
+        election2_pattern: Glob pattern for second election files
+        county_filter: Optional county name. If None, compares all counties.
+        similarity_threshold: Minimum similarity (0.0-1.0) for rename detection
+        output_file: Optional CSV file path to write detailed comparison report
+        verbose: If True, print summary statistics
+
+    Returns:
+        Dictionary mapping county names to comparison results:
+        {
+            'county_name': {
+                'only_in_election1': set of precinct names,
+                'only_in_election2': set of precinct names,
+                'in_both': set of precinct names,
+                'potential_renames': list of (old_name, new_name, similarity) tuples,
+                'stats': {
+                    'election1_count': int,
+                    'election2_count': int,
+                    'unchanged_count': int,
+                    'removed_count': int,
+                    'added_count': int,
+                    'change_percentage': float
+                }
+            }
+        }
+
+    Example:
+        >>> results = compare_precinct_names(
+        ...     election1_dir='2020/counties',
+        ...     election1_pattern='20201103*precinct.csv',
+        ...     election2_dir='2022/counties',
+        ...     election2_pattern='20221108*precinct.csv',
+        ...     county_filter='Travis'
+        ... )
+    """
+    if verbose:
+        print(f"Collecting precinct names from election 1...")
+    election1_precincts = collect_precinct_names(
+        election1_dir, election1_pattern, county_filter, verbose=False
+    )
+
+    if verbose:
+        print(f"Collecting precinct names from election 2...")
+    election2_precincts = collect_precinct_names(
+        election2_dir, election2_pattern, county_filter, verbose=False
+    )
+
+    # Get all counties to compare
+    all_counties = set(election1_precincts.keys()) | set(election2_precincts.keys())
+
+    comparison_results = {}
+    csv_rows = []
+
+    for county in sorted(all_counties):
+        precincts1 = election1_precincts.get(county, set())
+        precincts2 = election2_precincts.get(county, set())
+
+        only_in_1 = precincts1 - precincts2
+        only_in_2 = precincts2 - precincts1
+        in_both = precincts1 & precincts2
+
+        # Find potential renames
+        potential_renames = []
+        for old_precinct in only_in_1:
+            similar = _find_similar_precincts(
+                old_precinct, only_in_2, similarity_threshold
+            )
+            for new_precinct, similarity in similar:
+                potential_renames.append((old_precinct, new_precinct, similarity))
+
+        # Calculate statistics
+        total1 = len(precincts1)
+        total2 = len(precincts2)
+        unchanged = len(in_both)
+        removed = len(only_in_1)
+        added = len(only_in_2)
+
+        # Calculate change percentage
+        if total1 > 0:
+            change_pct = ((removed + added) / total1) * 100
+        else:
+            change_pct = 100.0 if total2 > 0 else 0.0
+
+        comparison_results[county] = {
+            'only_in_election1': only_in_1,
+            'only_in_election2': only_in_2,
+            'in_both': in_both,
+            'potential_renames': potential_renames,
+            'stats': {
+                'election1_count': total1,
+                'election2_count': total2,
+                'unchanged_count': unchanged,
+                'removed_count': removed,
+                'added_count': added,
+                'change_percentage': change_pct
+            }
+        }
+
+        if verbose:
+            print(f"\n{county} County:")
+            print(f"  Election 1 precincts: {total1}")
+            print(f"  Election 2 precincts: {total2}")
+            print(f"  Unchanged: {unchanged}")
+            print(f"  Removed/renamed: {removed}")
+            print(f"  Added/new: {added}")
+            print(f"  Change: {change_pct:.1f}%")
+
+            if potential_renames:
+                print(f"  Potential renames detected: {len(potential_renames)}")
+                for old, new, sim in potential_renames[:5]:  # Show top 5
+                    print(f"    '{old}' → '{new}' (similarity: {sim:.2f})")
+                if len(potential_renames) > 5:
+                    print(f"    ... and {len(potential_renames) - 5} more")
+
+        # Prepare CSV rows if output file is requested
+        if output_file:
+            for precinct in in_both:
+                csv_rows.append({
+                    'county': county,
+                    'precinct': precinct,
+                    'status': 'unchanged',
+                    'similarity': 1.0
+                })
+            for precinct in only_in_1:
+                csv_rows.append({
+                    'county': county,
+                    'precinct': precinct,
+                    'status': 'removed',
+                    'similarity': None
+                })
+            for precinct in only_in_2:
+                csv_rows.append({
+                    'county': county,
+                    'precinct': precinct,
+                    'status': 'added',
+                    'similarity': None
+                })
+            for old, new, sim in potential_renames:
+                csv_rows.append({
+                    'county': county,
+                    'precinct': f"{old} → {new}",
+                    'status': 'potential_rename',
+                    'similarity': sim
+                })
+
+    # Write CSV report if requested
+    if output_file:
+        with open(output_file, 'w', newline='') as csvfile:
+            fieldnames = ['county', 'precinct', 'status', 'similarity']
+            writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
+            writer.writeheader()
+            writer.writerows(csv_rows)
+
+        if verbose:
+            print(f"\nDetailed comparison written to: {output_file}")
+
+    return comparison_results
 
 
 if __name__ == '__main__':
