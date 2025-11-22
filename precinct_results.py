@@ -584,6 +584,285 @@ def compare_precinct_names(
     return comparison_results
 
 
+def check_party_variations(
+    csv_path: str,
+    similarity_threshold: float = 0.7,
+    output_file: Optional[str] = None,
+    verbose: bool = True
+) -> Dict[str, any]:
+    """
+    Check for variations in party values within a CSV file.
+
+    This function identifies all unique party values and detects potential
+    variations (e.g., "Democratic", "Democrat", "DEM", "Dem" that likely
+    refer to the same party).
+
+    Args:
+        csv_path: Path to the CSV file to analyze
+        similarity_threshold: Minimum similarity (0.0-1.0) for variation detection.
+                            Default: 0.7
+        output_file: Optional CSV file path to write detailed variation report
+        verbose: If True, print summary and variations found
+
+    Returns:
+        Dictionary with analysis results:
+        {
+            'unique_parties': set of all unique party values found,
+            'total_count': total number of party occurrences,
+            'party_counts': dict mapping party value to occurrence count,
+            'potential_variations': list of (party1, party2, similarity) tuples,
+            'empty_count': number of rows with empty/missing party values
+        }
+
+    Example:
+        >>> results = check_party_variations('20201103__tx__general__precinct.csv')
+        >>> print(results['unique_parties'])
+        {'DEM', 'Democratic', 'REP', 'Republican', 'LIB', 'Libertarian', ...}
+        >>> print(results['potential_variations'])
+        [('DEM', 'Democratic', 0.85), ('REP', 'Republican', 0.82), ...]
+    """
+    party_values = []
+    empty_count = 0
+
+    if verbose:
+        print(f"Analyzing party values in: {csv_path}")
+
+    # Collect all party values
+    with open(csv_path, 'r') as csvfile:
+        reader = csv.DictReader(csvfile)
+
+        for row in reader:
+            party = row.get('party', '').strip()
+
+            if not party:
+                empty_count += 1
+            else:
+                party_values.append(party)
+
+    # Get unique parties and counts
+    unique_parties = set(party_values)
+    party_counts = {}
+    for party in party_values:
+        party_counts[party] = party_counts.get(party, 0) + 1
+
+    # Detect potential variations
+    potential_variations = []
+    parties_list = sorted(unique_parties)
+
+    for i, party1 in enumerate(parties_list):
+        for party2 in parties_list[i + 1:]:
+            similarity = _calculate_similarity(party1, party2)
+            if similarity >= similarity_threshold:
+                potential_variations.append((party1, party2, similarity))
+
+    # Sort variations by similarity (highest first)
+    potential_variations.sort(key=lambda x: x[2], reverse=True)
+
+    results = {
+        'unique_parties': unique_parties,
+        'total_count': len(party_values),
+        'party_counts': party_counts,
+        'potential_variations': potential_variations,
+        'empty_count': empty_count
+    }
+
+    if verbose:
+        print(f"\nParty Value Analysis:")
+        print(f"  Total rows with party values: {len(party_values)}")
+        print(f"  Empty/missing party values: {empty_count}")
+        print(f"  Unique party values found: {len(unique_parties)}")
+        print(f"\nParty value frequency:")
+
+        # Show parties sorted by count
+        sorted_parties = sorted(party_counts.items(), key=lambda x: x[1], reverse=True)
+        for party, count in sorted_parties:
+            print(f"    {party}: {count}")
+
+        if potential_variations:
+            print(f"\nPotential variations detected: {len(potential_variations)}")
+            for party1, party2, sim in potential_variations:
+                count1 = party_counts.get(party1, 0)
+                count2 = party_counts.get(party2, 0)
+                print(f"    '{party1}' (n={count1}) ↔ '{party2}' (n={count2}) - similarity: {sim:.2f}")
+        else:
+            print("\nNo potential variations detected.")
+
+    # Write detailed report if requested
+    if output_file:
+        csv_rows = []
+
+        # Add party frequency rows
+        for party, count in sorted(party_counts.items(), key=lambda x: x[1], reverse=True):
+            csv_rows.append({
+                'party': party,
+                'count': count,
+                'status': 'unique_value',
+                'similar_to': '',
+                'similarity': ''
+            })
+
+        # Add variation rows
+        for party1, party2, sim in potential_variations:
+            csv_rows.append({
+                'party': f"{party1} ↔ {party2}",
+                'count': f"{party_counts.get(party1, 0)} / {party_counts.get(party2, 0)}",
+                'status': 'potential_variation',
+                'similar_to': '',
+                'similarity': f"{sim:.3f}"
+            })
+
+        with open(output_file, 'w', newline='') as csvfile:
+            fieldnames = ['party', 'count', 'status', 'similar_to', 'similarity']
+            writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
+            writer.writeheader()
+            writer.writerows(csv_rows)
+
+        if verbose:
+            print(f"\nDetailed report written to: {output_file}")
+
+    return results
+
+
+def check_party_variations_directory(
+    source_directory: str,
+    file_pattern: str,
+    similarity_threshold: float = 0.7,
+    output_file: Optional[str] = None,
+    verbose: bool = True
+) -> Dict[str, Set[str]]:
+    """
+    Check for party value variations across multiple CSV files in a directory.
+
+    This function scans all matching CSV files, collects all unique party values
+    across files, and detects potential variations that may indicate inconsistent
+    party naming conventions.
+
+    Args:
+        source_directory: Directory containing CSV files
+        file_pattern: Glob pattern for matching files (e.g., '20201103*precinct.csv')
+        similarity_threshold: Minimum similarity (0.0-1.0) for variation detection
+        output_file: Optional CSV file path to write detailed variation report
+        verbose: If True, print summary and variations found
+
+    Returns:
+        Dictionary with analysis results:
+        {
+            'all_parties': set of all unique party values across all files,
+            'by_file': dict mapping filename to set of party values in that file,
+            'potential_variations': list of (party1, party2, similarity) tuples,
+            'file_count': number of files processed
+        }
+
+    Example:
+        >>> results = check_party_variations_directory(
+        ...     source_directory='2020/counties',
+        ...     file_pattern='20201103*precinct.csv'
+        ... )
+    """
+    all_parties = set()
+    by_file = {}
+    original_dir = os.getcwd()
+
+    if verbose:
+        print(f"Scanning files matching pattern: {file_pattern}")
+        print(f"Source directory: {source_directory}")
+
+    try:
+        os.chdir(source_directory)
+
+        for fname in glob.glob(file_pattern):
+            if verbose:
+                print(f"  Processing: {fname}")
+
+            file_parties = set()
+
+            with open(fname, 'r') as csvfile:
+                reader = csv.DictReader(csvfile)
+
+                for row in reader:
+                    party = row.get('party', '').strip()
+                    if party:
+                        file_parties.add(party)
+                        all_parties.add(party)
+
+            by_file[fname] = file_parties
+
+    finally:
+        os.chdir(original_dir)
+
+    # Detect potential variations
+    potential_variations = []
+    parties_list = sorted(all_parties)
+
+    for i, party1 in enumerate(parties_list):
+        for party2 in parties_list[i + 1:]:
+            similarity = _calculate_similarity(party1, party2)
+            if similarity >= similarity_threshold:
+                potential_variations.append((party1, party2, similarity))
+
+    # Sort variations by similarity (highest first)
+    potential_variations.sort(key=lambda x: x[2], reverse=True)
+
+    results = {
+        'all_parties': all_parties,
+        'by_file': by_file,
+        'potential_variations': potential_variations,
+        'file_count': len(by_file)
+    }
+
+    if verbose:
+        print(f"\nDirectory-wide Party Analysis:")
+        print(f"  Files processed: {len(by_file)}")
+        print(f"  Unique party values across all files: {len(all_parties)}")
+        print(f"\nAll party values found:")
+        for party in sorted(all_parties):
+            file_count = sum(1 for parties in by_file.values() if party in parties)
+            print(f"    {party} (in {file_count} file(s))")
+
+        if potential_variations:
+            print(f"\nPotential variations detected: {len(potential_variations)}")
+            for party1, party2, sim in potential_variations:
+                print(f"    '{party1}' ↔ '{party2}' - similarity: {sim:.2f}")
+        else:
+            print("\nNo potential variations detected.")
+
+    # Write detailed report if requested
+    if output_file:
+        csv_rows = []
+
+        # Add party rows showing which files contain each party value
+        for party in sorted(all_parties):
+            files_with_party = [f for f, parties in by_file.items() if party in parties]
+            csv_rows.append({
+                'party': party,
+                'file_count': len(files_with_party),
+                'status': 'unique_value',
+                'similarity': '',
+                'files': '; '.join(files_with_party)
+            })
+
+        # Add variation rows
+        for party1, party2, sim in potential_variations:
+            csv_rows.append({
+                'party': f"{party1} ↔ {party2}",
+                'file_count': '',
+                'status': 'potential_variation',
+                'similarity': f"{sim:.3f}",
+                'files': ''
+            })
+
+        with open(output_file, 'w', newline='') as csvfile:
+            fieldnames = ['party', 'file_count', 'status', 'similarity', 'files']
+            writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
+            writer.writeheader()
+            writer.writerows(csv_rows)
+
+        if verbose:
+            print(f"\nDetailed report written to: {output_file}")
+
+    return results
+
+
 if __name__ == '__main__':
     # Example usage
     print("OpenElections Statewide Precinct Results Generator")

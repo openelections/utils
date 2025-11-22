@@ -135,6 +135,118 @@ County-level CSV files should have:
 - All discovered vote type columns in sorted order
 - One row per precinct/office/candidate combination
 
+## Party Variation Checker
+
+Utilities to detect inconsistent party naming conventions in CSV files.
+
+### Overview
+
+These functions help identify variations in party values (e.g., "DEM", "Democratic", "Democrat") that likely refer to the same political party. This is useful for:
+
+- Data quality assurance
+- Identifying data entry inconsistencies
+- Standardizing party names before processing
+
+### Features
+
+- **Single file analysis**: Check party variations in a single CSV file
+- **Directory-wide analysis**: Check party variations across multiple files
+- **Similarity detection**: Uses string similarity to identify potential variations
+- **Frequency reporting**: Shows occurrence counts for each party value
+- **Optional CSV reports**: Export detailed analysis to CSV files
+
+### Quick Start
+
+#### Check a Single CSV File
+
+```python
+from precinct_results import check_party_variations
+
+results = check_party_variations('20201103__tx__general__precinct.csv')
+print(results['unique_parties'])
+print(results['potential_variations'])
+```
+
+#### Check Multiple Files in a Directory
+
+```python
+from precinct_results import check_party_variations_directory
+
+results = check_party_variations_directory(
+    source_directory='2020/counties',
+    file_pattern='20201103*precinct.csv',
+    output_file='party_variations_report.csv'
+)
+```
+
+### API Reference
+
+#### `check_party_variations()`
+
+Check for variations in party values within a single CSV file.
+
+**Parameters:**
+
+- `csv_path` (str): Path to the CSV file to analyze
+- `similarity_threshold` (float, optional): Minimum similarity (0.0-1.0) for variation detection. Default: 0.7
+- `output_file` (str, optional): Path to write detailed variation report
+- `verbose` (bool, optional): If True, print summary and variations found. Default: True
+
+**Returns:**
+
+Dictionary with:
+- `unique_parties`: Set of all unique party values found
+- `total_count`: Total number of party occurrences
+- `party_counts`: Dict mapping party value to occurrence count
+- `potential_variations`: List of (party1, party2, similarity) tuples
+- `empty_count`: Number of rows with empty/missing party values
+
+#### `check_party_variations_directory()`
+
+Check for party value variations across multiple CSV files in a directory.
+
+**Parameters:**
+
+- `source_directory` (str): Directory containing CSV files
+- `file_pattern` (str): Glob pattern for matching files (e.g., '20201103*precinct.csv')
+- `similarity_threshold` (float, optional): Minimum similarity (0.0-1.0) for variation detection. Default: 0.7
+- `output_file` (str, optional): Path to write detailed variation report
+- `verbose` (bool, optional): If True, print summary and variations found. Default: True
+
+**Returns:**
+
+Dictionary with:
+- `all_parties`: Set of all unique party values across all files
+- `by_file`: Dict mapping filename to set of party values in that file
+- `potential_variations`: List of (party1, party2, similarity) tuples
+- `file_count`: Number of files processed
+
+### Example Output
+
+```
+Party Value Analysis:
+  Total rows with party values: 125000
+  Empty/missing party values: 150
+  Unique party values found: 8
+
+Party value frequency:
+    DEM: 55000
+    REP: 52000
+    Democratic: 8500
+    Republican: 7200
+    LIB: 1800
+    GRN: 450
+    IND: 50
+
+Potential variations detected: 2
+    'DEM' (n=55000) ↔ 'Democratic' (n=8500) - similarity: 0.82
+    'REP' (n=52000) ↔ 'Republican' (n=7200) - similarity: 0.79
+```
+
+## Precinct Name Comparison
+
+See the `compare_precinct_names()` function for comparing precinct names between elections.
+
 ## License
 
 See LICENSE file for details.
