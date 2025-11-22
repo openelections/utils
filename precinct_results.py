@@ -244,6 +244,7 @@ def collect_precinct_names(
     source_directory: str,
     file_pattern: str,
     county_filter: Optional[str] = None,
+    normalize_case: bool = False,
     verbose: bool = False
 ) -> Dict[str, Set[str]]:
     """
@@ -253,6 +254,7 @@ def collect_precinct_names(
         source_directory: Directory containing county precinct CSV files
         file_pattern: Glob pattern for matching files (e.g., '20201103*precinct.csv')
         county_filter: Optional county name to filter by. If None, includes all counties.
+        normalize_case: If True, convert all precinct names to lowercase for comparison
         verbose: If True, print progress messages
 
     Returns:
@@ -293,6 +295,10 @@ def collect_precinct_names(
 
                     if county not in precinct_data:
                         precinct_data[county] = set()
+
+                    # Normalize case if requested
+                    if normalize_case:
+                        precinct = precinct.lower()
 
                     precinct_data[county].add(precinct)
 
@@ -338,6 +344,7 @@ def compare_precinct_names(
     election2_dir: str,
     election2_pattern: str,
     county_filter: Optional[str] = None,
+    normalize_case: bool = True,
     similarity_threshold: float = 0.6,
     output_file: Optional[str] = None,
     verbose: bool = True
@@ -350,6 +357,7 @@ def compare_precinct_names(
     - Precincts that exist only in election 2 (new/renamed)
     - Precincts that exist in both elections (unchanged)
     - Potential renames based on name similarity
+    - Case-only differences (when normalize_case=True)
 
     Args:
         election1_dir: Directory containing first election's CSV files
@@ -357,6 +365,8 @@ def compare_precinct_names(
         election2_dir: Directory containing second election's CSV files
         election2_pattern: Glob pattern for second election files
         county_filter: Optional county name. If None, compares all counties.
+        normalize_case: If True, ignore case differences. Will report any
+                       case-only mismatches found. Default: True.
         similarity_threshold: Minimum similarity (0.0-1.0) for rename detection
         output_file: Optional CSV file path to write detailed comparison report
         verbose: If True, print summary statistics
@@ -369,13 +379,15 @@ def compare_precinct_names(
                 'only_in_election2': set of precinct names,
                 'in_both': set of precinct names,
                 'potential_renames': list of (old_name, new_name, similarity) tuples,
+                'case_mismatches': list of (election1_name, election2_name) tuples,
                 'stats': {
                     'election1_count': int,
                     'election2_count': int,
                     'unchanged_count': int,
                     'removed_count': int,
                     'added_count': int,
-                    'change_percentage': float
+                    'change_percentage': float,
+                    'case_mismatch_count': int
                 }
             }
         }
@@ -389,17 +401,34 @@ def compare_precinct_names(
         ...     county_filter='Travis'
         ... )
     """
+    # First, collect without normalization to detect case mismatches
     if verbose:
         print(f"Collecting precinct names from election 1...")
-    election1_precincts = collect_precinct_names(
-        election1_dir, election1_pattern, county_filter, verbose=False
+    election1_precincts_raw = collect_precinct_names(
+        election1_dir, election1_pattern, county_filter, normalize_case=False, verbose=False
     )
 
     if verbose:
         print(f"Collecting precinct names from election 2...")
-    election2_precincts = collect_precinct_names(
-        election2_dir, election2_pattern, county_filter, verbose=False
+    election2_precincts_raw = collect_precinct_names(
+        election2_dir, election2_pattern, county_filter, normalize_case=False, verbose=False
     )
+
+    # If normalize_case is True, also collect normalized versions
+    if normalize_case:
+        election1_precincts_normalized = collect_precinct_names(
+            election1_dir, election1_pattern, county_filter, normalize_case=True, verbose=False
+        )
+        election2_precincts_normalized = collect_precinct_names(
+            election2_dir, election2_pattern, county_filter, normalize_case=True, verbose=False
+        )
+        # Use normalized for comparison
+        election1_precincts = election1_precincts_normalized
+        election2_precincts = election2_precincts_normalized
+    else:
+        # Use raw for comparison
+        election1_precincts = election1_precincts_raw
+        election2_precincts = election2_precincts_raw
 
     # Get all counties to compare
     all_counties = set(election1_precincts.keys()) | set(election2_precincts.keys())
@@ -414,6 +443,26 @@ def compare_precinct_names(
         only_in_1 = precincts1 - precincts2
         only_in_2 = precincts2 - precincts1
         in_both = precincts1 & precincts2
+
+        # Detect case-only mismatches if normalization is enabled
+        case_mismatches = []
+        if normalize_case:
+            # Check for precincts that match when normalized but differ in case
+            precincts1_raw = election1_precincts_raw.get(county, set())
+            precincts2_raw = election2_precincts_raw.get(county, set())
+
+            # Build mapping from lowercase to original case
+            p1_lower_to_orig = {p.lower(): p for p in precincts1_raw}
+            p2_lower_to_orig = {p.lower(): p for p in precincts2_raw}
+
+            # Find precincts that are in both when normalized
+            for precinct_lower in in_both:
+                orig1 = p1_lower_to_orig.get(precinct_lower, precinct_lower)
+                orig2 = p2_lower_to_orig.get(precinct_lower, precinct_lower)
+
+                # If the original forms differ, it's a case mismatch
+                if orig1 != orig2:
+                    case_mismatches.append((orig1, orig2))
 
         # Find potential renames
         potential_renames = []
@@ -430,6 +479,7 @@ def compare_precinct_names(
         unchanged = len(in_both)
         removed = len(only_in_1)
         added = len(only_in_2)
+        case_mismatch_count = len(case_mismatches)
 
         # Calculate change percentage
         if total1 > 0:
@@ -442,13 +492,15 @@ def compare_precinct_names(
             'only_in_election2': only_in_2,
             'in_both': in_both,
             'potential_renames': potential_renames,
+            'case_mismatches': case_mismatches,
             'stats': {
                 'election1_count': total1,
                 'election2_count': total2,
                 'unchanged_count': unchanged,
                 'removed_count': removed,
                 'added_count': added,
-                'change_percentage': change_pct
+                'change_percentage': change_pct,
+                'case_mismatch_count': case_mismatch_count
             }
         }
 
@@ -460,6 +512,13 @@ def compare_precinct_names(
             print(f"  Removed/renamed: {removed}")
             print(f"  Added/new: {added}")
             print(f"  Change: {change_pct:.1f}%")
+
+            if case_mismatches:
+                print(f"  Case mismatches detected: {case_mismatch_count}")
+                for orig1, orig2 in case_mismatches[:5]:  # Show top 5
+                    print(f"    '{orig1}' vs '{orig2}'")
+                if len(case_mismatches) > 5:
+                    print(f"    ... and {len(case_mismatches) - 5} more")
 
             if potential_renames:
                 print(f"  Potential renames detected: {len(potential_renames)}")
@@ -475,34 +534,46 @@ def compare_precinct_names(
                     'county': county,
                     'precinct': precinct,
                     'status': 'unchanged',
-                    'similarity': 1.0
+                    'similarity': 1.0,
+                    'notes': ''
                 })
             for precinct in only_in_1:
                 csv_rows.append({
                     'county': county,
                     'precinct': precinct,
                     'status': 'removed',
-                    'similarity': None
+                    'similarity': None,
+                    'notes': ''
                 })
             for precinct in only_in_2:
                 csv_rows.append({
                     'county': county,
                     'precinct': precinct,
                     'status': 'added',
-                    'similarity': None
+                    'similarity': None,
+                    'notes': ''
+                })
+            for orig1, orig2 in case_mismatches:
+                csv_rows.append({
+                    'county': county,
+                    'precinct': f"{orig1} | {orig2}",
+                    'status': 'case_mismatch',
+                    'similarity': 1.0,
+                    'notes': 'Same precinct, different casing'
                 })
             for old, new, sim in potential_renames:
                 csv_rows.append({
                     'county': county,
                     'precinct': f"{old} → {new}",
                     'status': 'potential_rename',
-                    'similarity': sim
+                    'similarity': sim,
+                    'notes': ''
                 })
 
     # Write CSV report if requested
     if output_file:
         with open(output_file, 'w', newline='') as csvfile:
-            fieldnames = ['county', 'precinct', 'status', 'similarity']
+            fieldnames = ['county', 'precinct', 'status', 'similarity', 'notes']
             writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
             writer.writeheader()
             writer.writerows(csv_rows)

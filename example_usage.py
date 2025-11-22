@@ -175,6 +175,47 @@ def example_compare_general_elections():
     )
 
 
+# Example 11: Compare with case normalization to detect case inconsistencies
+def example_case_normalization():
+    """Compare precincts with case normalization, reporting case mismatches"""
+    results = compare_precinct_names(
+        election1_dir='2020/counties',
+        election1_pattern='20201103*precinct.csv',
+        election2_dir='2022/counties',
+        election2_pattern='20221108*precinct.csv',
+        normalize_case=True,  # Ignore case differences (default)
+        output_file='precinct_comparison_with_case_detection.csv'
+    )
+
+    # Check for case mismatches across all counties
+    total_case_mismatches = sum(
+        data['stats']['case_mismatch_count']
+        for data in results.values()
+    )
+
+    if total_case_mismatches > 0:
+        print(f"\nFound {total_case_mismatches} case mismatches across all counties")
+        print("\nCounties with case mismatches:")
+        for county, data in results.items():
+            if data['case_mismatches']:
+                print(f"  {county}: {len(data['case_mismatches'])} mismatches")
+
+
+# Example 12: Strict case-sensitive comparison
+def example_case_sensitive():
+    """Compare precincts with strict case-sensitive matching"""
+    results = compare_precinct_names(
+        election1_dir='2020/counties',
+        election1_pattern='20201103*precinct.csv',
+        election2_dir='2022/counties',
+        election2_pattern='20221108*precinct.csv',
+        normalize_case=False,  # Strict case-sensitive comparison
+        county_filter='Travis'
+    )
+
+    # With normalize_case=False, "Precinct 101" and "PRECINCT 101" are different
+
+
 if __name__ == '__main__':
     # Run the basic example
     print("Running basic Texas 2020 example...")
@@ -192,6 +233,8 @@ if __name__ == '__main__':
     # example_compare_precincts_statewide()
     # example_collect_precincts()
     # example_compare_general_elections()
+    # example_case_normalization()
+    # example_case_sensitive()
 
     print("\nTo use this in your openelections-data-* repository:")
     print("1. Copy precinct_results.py to your repository")
