@@ -9,7 +9,9 @@ from precinct_results import (
     generate_statewide_precinct_file,
     generate_vote_columns_report,
     compare_precinct_names,
-    collect_precinct_names
+    collect_precinct_names,
+    check_party_variations,
+    check_party_variations_directory
 )
 
 
@@ -216,6 +218,102 @@ def example_case_sensitive():
     # With normalize_case=False, "Precinct 101" and "PRECINCT 101" are different
 
 
+# Example 13: Check party variations in a single statewide file
+def example_check_party_variations_single_file():
+    """Check for party value variations in a single CSV file"""
+    results = check_party_variations(
+        csv_path='20201103__tx__general__precinct.csv',
+        similarity_threshold=0.7,  # Adjust to be more/less strict
+        output_file='party_variations_report.csv'
+    )
+
+    # Access results programmatically
+    print(f"\nFound {len(results['unique_parties'])} unique party values")
+    print(f"Detected {len(results['potential_variations'])} potential variations")
+
+    # Check if there are variations to investigate
+    if results['potential_variations']:
+        print("\nParties that may need standardization:")
+        for party1, party2, similarity in results['potential_variations']:
+            count1 = results['party_counts'][party1]
+            count2 = results['party_counts'][party2]
+            print(f"  '{party1}' (n={count1}) vs '{party2}' (n={count2})")
+
+
+# Example 14: Check party variations across county files
+def example_check_party_variations_directory():
+    """Check for party value variations across multiple county files"""
+    results = check_party_variations_directory(
+        source_directory='2020/counties',
+        file_pattern='20201103*precinct.csv',
+        similarity_threshold=0.7,
+        output_file='party_variations_by_county.csv'
+    )
+
+    print(f"\nAnalyzed {results['file_count']} files")
+    print(f"Found {len(results['all_parties'])} unique party values across all files")
+
+    # Show which files use which party values
+    if results['potential_variations']:
+        print("\nPotential standardization needed:")
+        for party1, party2, similarity in results['potential_variations']:
+            files_with_party1 = [f for f, parties in results['by_file'].items() if party1 in parties]
+            files_with_party2 = [f for f, parties in results['by_file'].items() if party2 in parties]
+            print(f"  '{party1}' (in {len(files_with_party1)} files) vs '{party2}' (in {len(files_with_party2)} files)")
+
+
+# Example 15: Check party variations with custom threshold
+def example_party_variations_strict():
+    """Check for party variations with a stricter similarity threshold"""
+    # Higher threshold = more strict (only very similar strings are flagged)
+    results = check_party_variations(
+        csv_path='20201103__tx__general__precinct.csv',
+        similarity_threshold=0.85,  # Only flag very similar variations
+        verbose=True
+    )
+
+    # This would catch "DEM" vs "Democratic" but might miss "Democrat" vs "Dem"
+
+
+# Example 16: Quiet party variation check
+def example_party_variations_quiet():
+    """Check for party variations without verbose output"""
+    results = check_party_variations(
+        csv_path='20201103__tx__general__precinct.csv',
+        verbose=False  # No console output
+    )
+
+    # Process results programmatically
+    if results['potential_variations']:
+        # Handle variations in code
+        for party1, party2, sim in results['potential_variations']:
+            # Custom processing logic here
+            pass
+
+
+# Example 17: Party variation analysis for data quality report
+def example_party_quality_report():
+    """Generate a comprehensive party data quality report"""
+    # Check single consolidated file
+    results = check_party_variations(
+        csv_path='20201103__tx__general__precinct.csv',
+        output_file='party_quality_report.csv',
+        verbose=True
+    )
+
+    # Generate summary statistics
+    total_rows = results['total_count'] + results['empty_count']
+    data_quality_score = (results['total_count'] / total_rows * 100) if total_rows > 0 else 0
+
+    print(f"\n=== Party Data Quality Report ===")
+    print(f"Total rows: {total_rows}")
+    print(f"Rows with party values: {results['total_count']}")
+    print(f"Rows with empty party: {results['empty_count']}")
+    print(f"Data completeness: {data_quality_score:.1f}%")
+    print(f"Unique party values: {len(results['unique_parties'])}")
+    print(f"Standardization needed: {len(results['potential_variations'])} potential issues")
+
+
 if __name__ == '__main__':
     # Run the basic example
     print("Running basic Texas 2020 example...")
@@ -235,10 +333,16 @@ if __name__ == '__main__':
     # example_compare_general_elections()
     # example_case_normalization()
     # example_case_sensitive()
+    # example_check_party_variations_single_file()
+    # example_check_party_variations_directory()
+    # example_party_variations_strict()
+    # example_party_variations_quiet()
+    # example_party_quality_report()
 
     print("\nTo use this in your openelections-data-* repository:")
     print("1. Copy precinct_results.py to your repository")
     print("2. Import the functions you need:")
     print("   from precinct_results import generate_statewide_precinct_file")
     print("   from precinct_results import compare_precinct_names")
+    print("   from precinct_results import check_party_variations")
     print("3. Call them with your state's parameters")
