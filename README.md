@@ -247,6 +247,273 @@ Potential variations detected: 2
 
 See the `compare_precinct_names()` function for comparing precinct names between elections.
 
+## CSV File Comparison
+
+A comprehensive utility for comparing two CSV election files to identify and report differences.
+
+### Overview
+
+The `compare_csv_files()` function compares two CSV files from the same state, county, and election to detect:
+- Missing rows (rows in File A but not in File B)
+- Extra rows (rows in File B but not in File A)
+- Value mismatches in matching rows
+- Structural differences (missing/extra columns)
+- Vote total discrepancies
+
+This is useful for:
+- Data validation and quality assurance
+- Verifying corrections were applied correctly
+- Comparing original source data vs. processed data
+- Migration testing and format validation
+
+### Features
+
+- **Flexible row identification**: Auto-detects key columns or accepts custom column specification
+- **Multiple output formats**: Terminal (CLI), HTML web report, or both
+- **CSV export**: Export detailed differences for further analysis
+- **Numeric tolerance**: Optionally ignore small numeric differences
+- **Column filtering**: Exclude specific columns from comparison
+- **Vote total analysis**: Automatic calculation and comparison of vote totals
+- **Color-coded output**: Easy-to-read terminal output with ANSI colors
+- **Detailed reporting**: Summary statistics plus detailed difference listings
+
+### Quick Start
+
+#### Basic Comparison
+```python
+from precinct_results import compare_csv_files
+
+# Compare two files
+results = compare_csv_files(
+    'original.csv',
+    'corrected.csv',
+    verbose=True
+)
+
+# Check if files match
+if results['summary']['percentage_match'] == 100.0:
+    print("Files are identical!")
+```
+
+#### Generate Web Report
+```python
+compare_csv_files(
+    'file_a.csv',
+    'file_b.csv',
+    output_format='web',
+    output_file='comparison_report.html'
+)
+# Open comparison_report.html in a browser
+```
+
+#### Export Differences to CSV
+```python
+compare_csv_files(
+    'file_a.csv',
+    'file_b.csv',
+    csv_export='differences.csv',
+    verbose=True
+)
+# Opens in Excel or can be imported for analysis
+```
+
+### API Reference
+
+#### `compare_csv_files()`
+
+Compare two CSV files and report differences.
+
+**Parameters:**
+
+- `file_a` (str): Path to first CSV file
+- `file_b` (str): Path to second CSV file
+- `key_columns` (list, optional): Columns to use as row identifier. If None, auto-detects from standard election columns (county, precinct, office, district, candidate, party)
+- `ignore_columns` (list, optional): Columns to exclude from comparison
+- `tolerance` (float, optional): Numeric comparison tolerance (default: 0.0)
+- `max_differences` (int, optional): Stop after N differences (default: unlimited)
+- `output_format` (str, optional): Output format - 'cli', 'web', or 'both' (default: 'cli')
+- `output_file` (str, optional): Output file path (HTML for web, text for cli)
+- `csv_export` (str, optional): Export detailed differences to CSV file
+- `verbose` (bool, optional): Print detailed output (default: True)
+- `color` (bool, optional): Use colored terminal output (default: True)
+
+**Returns:**
+
+Dictionary with comparison results containing:
+- `metadata`: File information and timestamps
+- `summary`: High-level statistics (match percentage, difference counts)
+- `column_differences`: Missing/extra columns
+- `row_differences`: Missing/extra rows
+- `value_differences`: Value mismatches with details
+- `vote_totals`: Vote totals and differences by vote type
+
+### Usage Examples
+
+#### Compare with Custom Key Columns
+```python
+# If your CSV has different structure, specify key columns
+results = compare_csv_files(
+    'file_a.csv',
+    'file_b.csv',
+    key_columns=['county', 'precinct', 'office', 'candidate']
+)
+```
+
+#### Ignore Specific Columns
+```python
+# Exclude columns you know will differ
+compare_csv_files(
+    'file_a.csv',
+    'file_b.csv',
+    ignore_columns=['provisional', 'absentee']
+)
+```
+
+#### Use Numeric Tolerance
+```python
+# Ignore differences of 5 votes or less
+compare_csv_files(
+    'file_a.csv',
+    'file_b.csv',
+    tolerance=5.0
+)
+```
+
+#### Quiet Mode for Automation
+```python
+# For use in scripts/CI pipelines
+results = compare_csv_files(
+    'file_a.csv',
+    'file_b.csv',
+    verbose=False,
+    color=False
+)
+
+if results['summary']['total_differences'] > 0:
+    print(f"FAIL: {results['summary']['total_differences']} differences")
+    exit(1)
+else:
+    print("PASS: Files match")
+    exit(0)
+```
+
+#### Analyze Specific Difference Types
+```python
+results = compare_csv_files('file_a.csv', 'file_b.csv', verbose=False)
+
+# Analyze vote total discrepancies
+for vote_type, diff in results['vote_totals']['differences'].items():
+    if diff != 0:
+        print(f"{vote_type}: {diff:+,} vote difference")
+
+# Count mismatches by column
+mismatches_by_column = {}
+for diff in results['value_differences']:
+    col = diff['column']
+    mismatches_by_column[col] = mismatches_by_column.get(col, 0) + 1
+
+for col, count in sorted(mismatches_by_column.items()):
+    print(f"{col}: {count} mismatch(es)")
+```
+
+#### Data Quality Validation Workflow
+```python
+# Complete validation workflow
+results = compare_csv_files(
+    'original.csv',
+    'processed.csv',
+    csv_export='validation_differences.csv',
+    verbose=False
+)
+
+acceptable_error_rate = 1.0  # 1%
+error_rate = 100.0 - results['summary']['percentage_match']
+
+if error_rate <= acceptable_error_rate:
+    print("✓ PASS: Error rate within acceptable threshold")
+else:
+    print("✗ FAIL: Error rate exceeds threshold")
+    # Generate detailed HTML report for review
+    compare_csv_files(
+        'original.csv',
+        'processed.csv',
+        output_format='web',
+        output_file='validation_report.html',
+        verbose=False
+    )
+```
+
+### Output Examples
+
+#### Terminal Output (CLI)
+```
+CSV Comparison Report
+======================================================================
+
+Files:
+  File A: original.csv
+  File B: corrected.csv
+
+Structure:
+  Rows:    1,234 vs 1,235 (+1)
+  Columns: 12 vs 12 (identical)
+
+Results:
+  ✓ Identical rows:      1,180 (95.6%)
+  ✗ Missing rows:        10   (0.8%)
+  ✗ Extra rows:          11   (0.9%)
+  ✗ Value mismatches:    34   (2.7%)
+
+Vote Totals:
+  early_voting         File A: 125,432  File B: 125,450  (Δ +18)
+  election_day         File A: 234,567  File B: 234,567  (✓ Match)
+  mail                 File A: 45,678   File B: 45,680   (Δ +2)
+
+Overall Match: 95.6%
+```
+
+#### Web Report
+The HTML report includes:
+- Summary dashboard with match rate and difference counts
+- Interactive tables showing all differences
+- Vote total comparison charts
+- Sortable and filterable difference listings
+- Responsive design for desktop/mobile
+
+#### CSV Export
+Exported CSV includes columns:
+- `type`: Type of difference (missing_row, extra_row, value_mismatch)
+- `county`, `precinct`, `office`, `district`, `candidate`, `party`: Row identification
+- `column`: Column with difference (for value mismatches)
+- `value_a`, `value_b`: Values from each file
+- `difference`: Numeric difference (if applicable)
+- `notes`: Additional information
+
+### Integration with Existing Workflows
+
+```python
+# Example: Compare before and after correction
+from precinct_results import compare_csv_files
+
+# Step 1: Make corrections
+# ... your correction code ...
+
+# Step 2: Validate corrections
+results = compare_csv_files(
+    'before_correction.csv',
+    'after_correction.csv',
+    csv_export='corrections_applied.csv',
+    output_format='web',
+    output_file='correction_report.html'
+)
+
+# Step 3: Verify expected changes
+print(f"Corrections applied: {results['summary']['value_mismatches']}")
+print(f"Match rate: {results['summary']['percentage_match']:.1f}%")
+```
+
+See `example_usage.py` for more comprehensive examples.
+
 ## License
 
 See LICENSE file for details.
