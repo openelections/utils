@@ -11,8 +11,10 @@ Based on: https://github.com/openelections/openelections-data-tx/blob/master/sta
 import os
 import glob
 import csv
-from typing import List, Dict, Set, Optional, Tuple
+from typing import List, Dict, Set, Optional, Tuple, Any
 from difflib import SequenceMatcher
+from datetime import datetime
+from enum import Enum
 
 
 # Standard columns that are not vote type columns
@@ -861,6 +863,827 @@ def check_party_variations_directory(
             print(f"\nDetailed report written to: {output_file}")
 
     return results
+
+
+class DifferenceType(Enum):
+    """Types of differences that can be detected between CSV files."""
+    MISSING_ROW = "missing_row"
+    EXTRA_ROW = "extra_row"
+    VALUE_MISMATCH = "value_mismatch"
+    MISSING_COLUMN = "missing_column"
+    EXTRA_COLUMN = "extra_column"
+
+
+def _generate_row_key(
+    row: Dict[str, Any],
+    key_columns: List[str]
+) -> Tuple[str, ...]:
+    """
+    Generate a unique key for a row based on key columns.
+
+    Args:
+        row: Row data as dictionary
+        key_columns: List of column names to use as key
+
+    Returns:
+        Tuple of values forming the unique key
+    """
+    return tuple(str(row.get(col, '')).strip().lower() for col in key_columns)
+
+
+def _load_and_validate_csv(
+    file_path: str,
+    key_columns: Optional[List[str]] = None
+) -> Tuple[List[Dict[str, Any]], List[str], List[str]]:
+    """
+    Load and validate a CSV file.
+
+    Args:
+        file_path: Path to CSV file
+        key_columns: Expected key columns (optional validation)
+
+    Returns:
+        Tuple of (rows, all_columns, standard_columns)
+
+    Raises:
+        FileNotFoundError: If file doesn't exist
+        ValueError: If file is invalid or missing required columns
+    """
+    if not os.path.exists(file_path):
+        raise FileNotFoundError(f"File not found: {file_path}")
+
+    rows = []
+    all_columns = []
+
+    try:
+        with open(file_path, 'r', encoding='utf-8') as csvfile:
+            reader = csv.DictReader(csvfile)
+
+            if reader.fieldnames is None:
+                raise ValueError(f"CSV file has no headers: {file_path}")
+
+            all_columns = list(reader.fieldnames)
+
+            # Validate key columns if specified
+            if key_columns:
+                missing_cols = set(key_columns) - set(all_columns)
+                if missing_cols:
+                    raise ValueError(
+                        f"Missing required columns in {file_path}: {missing_cols}"
+                    )
+
+            for row in reader:
+                rows.append(row)
+
+    except csv.Error as e:
+        raise ValueError(f"Error reading CSV file {file_path}: {e}")
+
+    # Identify standard columns (key columns for election data)
+    standard_cols = [col for col in all_columns if col in STANDARD_COLUMNS]
+
+    return rows, all_columns, standard_cols
+
+
+def _build_row_index(
+    rows: List[Dict[str, Any]],
+    key_columns: List[str],
+    file_name: str = "file"
+) -> Dict[Tuple[str, ...], Dict[str, Any]]:
+    """
+    Build an index of rows by their unique keys.
+
+    Args:
+        rows: List of row dictionaries
+        key_columns: Columns to use for generating keys
+        file_name: Name of file (for warning messages)
+
+    Returns:
+        Dictionary mapping row keys to row data
+
+    Note:
+        If duplicate keys are found, the last occurrence is kept and a warning
+        is printed.
+    """
+    index = {}
+    duplicates = []
+
+    for i, row in enumerate(rows):
+        key = _generate_row_key(row, key_columns)
+
+        if key in index:
+            duplicates.append((key, i))
+
+        index[key] = row
+
+    if duplicates:
+        print(f"Warning: {file_name} has {len(duplicates)} duplicate row(s)")
+        if len(duplicates) <= 5:
+            for key, row_num in duplicates:
+                print(f"  Duplicate at row {row_num}: {key}")
+
+    return index
+
+
+def _compare_structures(
+    columns_a: List[str],
+    columns_b: List[str]
+) -> Dict[str, Any]:
+    """
+    Compare the structure (columns) of two CSV files.
+
+    Args:
+        columns_a: Columns from first file
+        columns_b: Columns from second file
+
+    Returns:
+        Dictionary with structure comparison results
+    """
+    set_a = set(columns_a)
+    set_b = set(columns_b)
+
+    missing_in_b = sorted(set_a - set_b)
+    extra_in_b = sorted(set_b - set_a)
+    common_columns = sorted(set_a & set_b)
+
+    return {
+        'missing_in_b': missing_in_b,
+        'extra_in_b': extra_in_b,
+        'common_columns': common_columns,
+        'columns_a': columns_a,
+        'columns_b': columns_b
+    }
+
+
+def _compare_rows(
+    index_a: Dict[Tuple[str, ...], Dict[str, Any]],
+    index_b: Dict[Tuple[str, ...], Dict[str, Any]]
+) -> Dict[str, Any]:
+    """
+    Compare rows between two indexed datasets.
+
+    Args:
+        index_a: Row index from first file
+        index_b: Row index from second file
+
+    Returns:
+        Dictionary with row comparison results
+    """
+    keys_a = set(index_a.keys())
+    keys_b = set(index_b.keys())
+
+    missing_keys = keys_a - keys_b  # In A but not B
+    extra_keys = keys_b - keys_a    # In B but not A
+    common_keys = keys_a & keys_b   # In both
+
+    # Convert keys back to row data for reporting
+    missing_rows = [index_a[key] for key in missing_keys]
+    extra_rows = [index_b[key] for key in extra_keys]
+
+    return {
+        'missing_keys': missing_keys,
+        'extra_keys': extra_keys,
+        'common_keys': common_keys,
+        'missing_rows': missing_rows,
+        'extra_rows': extra_rows
+    }
+
+
+def _compare_values(
+    index_a: Dict[Tuple[str, ...], Dict[str, Any]],
+    index_b: Dict[Tuple[str, ...], Dict[str, Any]],
+    common_keys: Set[Tuple[str, ...]],
+    common_columns: List[str],
+    key_columns: List[str],
+    tolerance: float = 0.0,
+    max_differences: Optional[int] = None
+) -> List[Dict[str, Any]]:
+    """
+    Compare values for rows that exist in both files.
+
+    Args:
+        index_a: Row index from first file
+        index_b: Row index from second file
+        common_keys: Keys present in both files
+        common_columns: Columns present in both files
+        key_columns: Columns used for row identification
+        tolerance: Numeric comparison tolerance
+        max_differences: Stop after N differences (None = unlimited)
+
+    Returns:
+        List of value difference dictionaries
+    """
+    differences = []
+
+    # Only compare non-key columns
+    compare_columns = [col for col in common_columns if col not in key_columns]
+
+    for key in common_keys:
+        row_a = index_a[key]
+        row_b = index_b[key]
+
+        for column in compare_columns:
+            value_a = row_a.get(column, '')
+            value_b = row_b.get(column, '')
+
+            # Normalize empty values
+            if value_a is None:
+                value_a = ''
+            if value_b is None:
+                value_b = ''
+
+            value_a = str(value_a).strip()
+            value_b = str(value_b).strip()
+
+            # Check if values differ
+            if value_a != value_b:
+                # Try numeric comparison with tolerance
+                numeric_diff = None
+                if tolerance > 0:
+                    try:
+                        num_a = float(value_a) if value_a else 0.0
+                        num_b = float(value_b) if value_b else 0.0
+                        diff = abs(num_a - num_b)
+
+                        if diff <= tolerance:
+                            continue  # Within tolerance, skip
+
+                        numeric_diff = num_b - num_a
+                    except (ValueError, TypeError):
+                        pass  # Not numeric, treat as string difference
+
+                # Build row key dict for reporting
+                row_key_dict = {col: row_a.get(col, '') for col in key_columns}
+
+                differences.append({
+                    'row_key': row_key_dict,
+                    'column': column,
+                    'value_a': value_a,
+                    'value_b': value_b,
+                    'difference': numeric_diff
+                })
+
+                # Check max differences limit
+                if max_differences and len(differences) >= max_differences:
+                    return differences
+
+    return differences
+
+
+def _calculate_vote_totals(
+    rows: List[Dict[str, Any]],
+    vote_columns: List[str]
+) -> Dict[str, int]:
+    """
+    Calculate total votes for each vote type column.
+
+    Args:
+        rows: List of row dictionaries
+        vote_columns: List of vote type column names
+
+    Returns:
+        Dictionary mapping vote column name to total votes
+    """
+    totals = {col: 0 for col in vote_columns}
+
+    for row in rows:
+        for col in vote_columns:
+            value = row.get(col, '')
+            if value:
+                try:
+                    totals[col] += int(float(str(value).strip()))
+                except (ValueError, TypeError):
+                    pass  # Skip non-numeric values
+
+    return totals
+
+
+def compare_csv_files(
+    file_a: str,
+    file_b: str,
+    key_columns: Optional[List[str]] = None,
+    ignore_columns: Optional[List[str]] = None,
+    tolerance: float = 0.0,
+    max_differences: Optional[int] = None,
+    output_format: str = 'cli',
+    output_file: Optional[str] = None,
+    csv_export: Optional[str] = None,
+    verbose: bool = True,
+    color: bool = True
+) -> Dict[str, Any]:
+    """
+    Compare two CSV files and report differences.
+
+    This function compares two CSV election files and identifies:
+    - Structural differences (missing/extra columns)
+    - Missing rows (in file A but not in file B)
+    - Extra rows (in file B but not in file A)
+    - Value mismatches in matching rows
+    - Vote total discrepancies
+
+    Args:
+        file_a: Path to first CSV file
+        file_b: Path to second CSV file
+        key_columns: Columns to use as row identifier. If None, uses standard
+                    election columns (county, precinct, office, district,
+                    candidate, party)
+        ignore_columns: Columns to exclude from comparison
+        tolerance: Numeric comparison tolerance (default: 0.0)
+        max_differences: Stop after N differences (default: unlimited)
+        output_format: Output format - 'cli', 'web', or 'both' (default: 'cli')
+        output_file: Output file path (HTML for web, text for cli)
+        csv_export: Export detailed differences to CSV file
+        verbose: Print detailed output (default: True)
+        color: Use colored terminal output (default: True)
+
+    Returns:
+        Dictionary with comparison results containing:
+        - metadata: File info and timestamps
+        - summary: High-level statistics
+        - column_differences: Missing/extra columns
+        - row_differences: Missing/extra rows
+        - value_differences: Value mismatches
+        - vote_totals: Vote totals and differences
+
+    Raises:
+        FileNotFoundError: If either file doesn't exist
+        ValueError: If files are invalid or incompatible
+
+    Example:
+        >>> results = compare_csv_files(
+        ...     'original.csv',
+        ...     'corrected.csv',
+        ...     verbose=True
+        ... )
+        >>> print(f"Match rate: {results['summary']['percentage_match']:.1f}%")
+    """
+    if verbose:
+        print(f"Comparing CSV files...")
+        print(f"  File A: {file_a}")
+        print(f"  File B: {file_b}")
+        print()
+
+    # Load and validate files
+    if verbose:
+        print("Loading files...")
+
+    rows_a, columns_a, std_cols_a = _load_and_validate_csv(file_a, key_columns)
+    rows_b, columns_b, std_cols_b = _load_and_validate_csv(file_b, key_columns)
+
+    # Determine key columns
+    if key_columns is None:
+        # Use standard election columns that exist in both files
+        key_columns = [
+            col for col in ['county', 'precinct', 'office', 'district', 'candidate', 'party']
+            if col in columns_a and col in columns_b
+        ]
+        if not key_columns:
+            raise ValueError(
+                "Cannot determine key columns. Please specify key_columns parameter."
+            )
+
+    if verbose:
+        print(f"Using key columns: {key_columns}")
+        print(f"File A: {len(rows_a)} rows, {len(columns_a)} columns")
+        print(f"File B: {len(rows_b)} rows, {len(columns_b)} columns")
+        print()
+
+    # Compare structures
+    if verbose:
+        print("Comparing structures...")
+
+    structure_diff = _compare_structures(columns_a, columns_b)
+
+    if structure_diff['missing_in_b']:
+        print(f"Warning: {len(structure_diff['missing_in_b'])} column(s) in File A but not File B")
+    if structure_diff['extra_in_b']:
+        print(f"Warning: {len(structure_diff['extra_in_b'])} column(s) in File B but not File A")
+
+    # Build row indices
+    if verbose:
+        print("Indexing rows...")
+
+    index_a = _build_row_index(rows_a, key_columns, "File A")
+    index_b = _build_row_index(rows_b, key_columns, "File B")
+
+    # Compare rows
+    if verbose:
+        print("Comparing rows...")
+
+    row_diff = _compare_rows(index_a, index_b)
+
+    # Compare values
+    if verbose:
+        print("Comparing values...")
+
+    value_diffs = _compare_values(
+        index_a,
+        index_b,
+        row_diff['common_keys'],
+        structure_diff['common_columns'],
+        key_columns,
+        tolerance,
+        max_differences
+    )
+
+    # Calculate vote totals
+    if verbose:
+        print("Calculating vote totals...")
+
+    # Identify vote columns (non-standard columns common to both files)
+    vote_columns = [
+        col for col in structure_diff['common_columns']
+        if col not in STANDARD_COLUMNS
+    ]
+
+    # Apply ignore_columns filter
+    if ignore_columns:
+        vote_columns = [col for col in vote_columns if col not in ignore_columns]
+
+    totals_a = _calculate_vote_totals(rows_a, vote_columns)
+    totals_b = _calculate_vote_totals(rows_b, vote_columns)
+    total_diffs = {
+        col: totals_b.get(col, 0) - totals_a.get(col, 0)
+        for col in vote_columns
+    }
+
+    # Calculate summary statistics
+    total_missing = len(row_diff['missing_rows'])
+    total_extra = len(row_diff['extra_rows'])
+    total_value_diffs = len(value_diffs)
+    total_common = len(row_diff['common_keys'])
+    total_col_diffs = len(structure_diff['missing_in_b']) + len(structure_diff['extra_in_b'])
+
+    total_differences = total_missing + total_extra + total_value_diffs + total_col_diffs
+
+    # Calculate percentage match
+    if len(rows_a) > 0:
+        percentage_match = (total_common / len(rows_a)) * 100
+    else:
+        percentage_match = 100.0 if len(rows_b) == 0 else 0.0
+
+    # Build results dictionary
+    results = {
+        'metadata': {
+            'file_a': file_a,
+            'file_b': file_b,
+            'compared_at': datetime.now().isoformat(),
+            'row_count_a': len(rows_a),
+            'row_count_b': len(rows_b),
+            'column_count_a': len(columns_a),
+            'column_count_b': len(columns_b),
+            'key_columns': key_columns,
+        },
+        'summary': {
+            'total_differences': total_differences,
+            'missing_rows': total_missing,
+            'extra_rows': total_extra,
+            'value_mismatches': total_value_diffs,
+            'missing_columns': len(structure_diff['missing_in_b']),
+            'extra_columns': len(structure_diff['extra_in_b']),
+            'identical_rows': total_common,
+            'percentage_match': percentage_match,
+        },
+        'column_differences': structure_diff,
+        'row_differences': row_diff,
+        'value_differences': value_diffs,
+        'vote_totals': {
+            'file_a': totals_a,
+            'file_b': totals_b,
+            'differences': total_diffs,
+        }
+    }
+
+    # Generate output
+    if output_format in ['cli', 'both']:
+        output_text = _format_cli_output(results, verbose, color)
+        print(output_text)
+
+        if output_file and output_format == 'cli':
+            with open(output_file, 'w') as f:
+                # Strip color codes for file output
+                f.write(output_text)
+            if verbose:
+                print(f"\nReport saved to: {output_file}")
+
+    if output_format in ['web', 'both']:
+        if not output_file:
+            output_file = 'comparison_report.html'
+        html_output = _format_web_output(results)
+        with open(output_file, 'w') as f:
+            f.write(html_output)
+        if verbose:
+            print(f"\nWeb report saved to: {output_file}")
+
+    # Export differences to CSV if requested
+    if csv_export:
+        _export_differences_csv(results, csv_export)
+        if verbose:
+            print(f"Differences exported to: {csv_export}")
+
+    return results
+
+
+def _format_cli_output(
+    results: Dict[str, Any],
+    verbose: bool = True,
+    color: bool = True
+) -> str:
+    """
+    Format comparison results for command-line output.
+
+    Args:
+        results: Comparison results dictionary
+        verbose: Include detailed output
+        color: Use ANSI color codes
+
+    Returns:
+        Formatted string for terminal output
+    """
+    # Color codes (ANSI)
+    if color:
+        GREEN = '\033[92m'
+        RED = '\033[91m'
+        YELLOW = '\033[93m'
+        CYAN = '\033[96m'
+        BOLD = '\033[1m'
+        RESET = '\033[0m'
+    else:
+        GREEN = RED = YELLOW = CYAN = BOLD = RESET = ''
+
+    lines = []
+
+    # Header
+    lines.append(f"{BOLD}{CYAN}CSV Comparison Report{RESET}")
+    lines.append("=" * 70)
+    lines.append("")
+
+    # Files
+    lines.append(f"{BOLD}Files:{RESET}")
+    lines.append(f"  File A: {results['metadata']['file_a']}")
+    lines.append(f"  File B: {results['metadata']['file_b']}")
+    lines.append("")
+
+    # Structure
+    lines.append(f"{BOLD}Structure:{RESET}")
+    row_a = results['metadata']['row_count_a']
+    row_b = results['metadata']['row_count_b']
+    row_diff = row_b - row_a
+    row_diff_str = f"({row_diff:+d})" if row_diff != 0 else "(identical)"
+
+    col_a = results['metadata']['column_count_a']
+    col_b = results['metadata']['column_count_b']
+    col_diff = col_b - col_a
+    col_diff_str = f"({col_diff:+d})" if col_diff != 0 else "(identical)"
+
+    lines.append(f"  Rows:    {row_a:,} vs {row_b:,} {row_diff_str}")
+    lines.append(f"  Columns: {col_a} vs {col_b} {col_diff_str}")
+    lines.append("")
+
+    # Results summary
+    lines.append(f"{BOLD}Results:{RESET}")
+    summary = results['summary']
+
+    match_pct = summary['percentage_match']
+    if match_pct == 100.0:
+        match_symbol = f"{GREEN}✓{RESET}"
+    else:
+        match_symbol = f"{YELLOW}~{RESET}"
+
+    lines.append(f"  {match_symbol} Identical rows:      {summary['identical_rows']:,} ({match_pct:.1f}%)")
+
+    if summary['missing_rows'] > 0:
+        lines.append(f"  {RED}✗{RESET} Missing rows:        {summary['missing_rows']:,}")
+
+    if summary['extra_rows'] > 0:
+        lines.append(f"  {RED}✗{RESET} Extra rows:          {summary['extra_rows']:,}")
+
+    if summary['value_mismatches'] > 0:
+        lines.append(f"  {RED}✗{RESET} Value mismatches:    {summary['value_mismatches']:,}")
+
+    if summary['missing_columns'] > 0:
+        lines.append(f"  {RED}✗{RESET} Missing columns:     {summary['missing_columns']}")
+
+    if summary['extra_columns'] > 0:
+        lines.append(f"  {RED}✗{RESET} Extra columns:       {summary['extra_columns']}")
+
+    lines.append("")
+
+    # Vote totals
+    vote_totals = results['vote_totals']
+    if vote_totals['file_a'] or vote_totals['file_b']:
+        lines.append(f"{BOLD}Vote Totals:{RESET}")
+
+        all_vote_cols = sorted(set(vote_totals['file_a'].keys()) | set(vote_totals['file_b'].keys()))
+
+        for col in all_vote_cols:
+            total_a = vote_totals['file_a'].get(col, 0)
+            total_b = vote_totals['file_b'].get(col, 0)
+            diff = vote_totals['differences'].get(col, 0)
+
+            if diff == 0:
+                diff_str = f"{GREEN}(✓ Match){RESET}"
+            else:
+                diff_str = f"{YELLOW}(Δ {diff:+,}){RESET}"
+
+            lines.append(f"  {col:20s} File A: {total_a:,}  File B: {total_b:,}  {diff_str}")
+
+        lines.append("")
+
+    # Overall match rate
+    if match_pct == 100.0:
+        lines.append(f"{GREEN}{BOLD}Overall Match: 100% - Files are identical!{RESET}")
+    else:
+        lines.append(f"{BOLD}Overall Match: {match_pct:.1f}%{RESET}")
+
+    if not verbose and summary['total_differences'] > 0:
+        lines.append("")
+        lines.append("For detailed differences, use --verbose flag or check CSV export.")
+
+    # Detailed output if verbose
+    if verbose and summary['total_differences'] > 0:
+        lines.append("")
+        lines.append("=" * 70)
+        lines.append(f"{BOLD}Detailed Differences{RESET}")
+        lines.append("")
+
+        # Missing rows
+        if summary['missing_rows'] > 0:
+            lines.append(f"{BOLD}Missing Rows ({summary['missing_rows']}):{RESET}")
+            lines.append("-" * 70)
+
+            for i, row in enumerate(results['row_differences']['missing_rows'][:10], 1):
+                key_str = " | ".join([f"{k}: {row.get(k, '')}" for k in results['metadata']['key_columns']])
+                lines.append(f"{i}. {key_str}")
+
+            if summary['missing_rows'] > 10:
+                lines.append(f"... and {summary['missing_rows'] - 10} more")
+
+            lines.append("")
+
+        # Extra rows
+        if summary['extra_rows'] > 0:
+            lines.append(f"{BOLD}Extra Rows ({summary['extra_rows']}):{RESET}")
+            lines.append("-" * 70)
+
+            for i, row in enumerate(results['row_differences']['extra_rows'][:10], 1):
+                key_str = " | ".join([f"{k}: {row.get(k, '')}" for k in results['metadata']['key_columns']])
+                lines.append(f"{i}. {key_str}")
+
+            if summary['extra_rows'] > 10:
+                lines.append(f"... and {summary['extra_rows'] - 10} more")
+
+            lines.append("")
+
+        # Value mismatches
+        if summary['value_mismatches'] > 0:
+            lines.append(f"{BOLD}Value Mismatches ({summary['value_mismatches']}):{RESET}")
+            lines.append("-" * 70)
+
+            for i, diff in enumerate(results['value_differences'][:20], 1):
+                key_str = " | ".join([f"{k}: {v}" for k, v in diff['row_key'].items()])
+                lines.append(f"{i}. {key_str}")
+                lines.append(f"   Column: {diff['column']}")
+                lines.append(f"     File A: {diff['value_a']}")
+                lines.append(f"     File B: {diff['value_b']}")
+
+                if diff['difference'] is not None:
+                    lines.append(f"     Diff:   {diff['difference']:+}")
+
+                lines.append("")
+
+            if summary['value_mismatches'] > 20:
+                lines.append(f"... and {summary['value_mismatches'] - 20} more")
+
+    return "\n".join(lines)
+
+
+def _export_differences_csv(results: Dict[str, Any], output_file: str) -> None:
+    """
+    Export differences to a CSV file.
+
+    Args:
+        results: Comparison results dictionary
+        output_file: Path to output CSV file
+    """
+    with open(output_file, 'w', newline='') as csvfile:
+        fieldnames = ['type', 'county', 'precinct', 'office', 'district',
+                     'candidate', 'party', 'column', 'value_a', 'value_b',
+                     'difference', 'notes']
+        writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
+        writer.writeheader()
+
+        key_columns = results['metadata']['key_columns']
+
+        # Missing rows
+        for row in results['row_differences']['missing_rows']:
+            row_data = {
+                'type': 'missing_row',
+                **{k: row.get(k, '') for k in key_columns},
+                'column': '',
+                'value_a': 'present',
+                'value_b': 'missing',
+                'difference': '',
+                'notes': 'Row exists in File A but not in File B'
+            }
+            writer.writerow(row_data)
+
+        # Extra rows
+        for row in results['row_differences']['extra_rows']:
+            row_data = {
+                'type': 'extra_row',
+                **{k: row.get(k, '') for k in key_columns},
+                'column': '',
+                'value_a': 'missing',
+                'value_b': 'present',
+                'difference': '',
+                'notes': 'Row exists in File B but not in File A'
+            }
+            writer.writerow(row_data)
+
+        # Value mismatches
+        for diff in results['value_differences']:
+            row_data = {
+                'type': 'value_mismatch',
+                **diff['row_key'],
+                'column': diff['column'],
+                'value_a': diff['value_a'],
+                'value_b': diff['value_b'],
+                'difference': diff['difference'] if diff['difference'] is not None else '',
+                'notes': ''
+            }
+            writer.writerow(row_data)
+
+
+def _format_web_output(results: Dict[str, Any]) -> str:
+    """
+    Format comparison results as an interactive HTML report.
+
+    Args:
+        results: Comparison results dictionary
+
+    Returns:
+        HTML string
+    """
+    # This is a placeholder - full implementation in Phase 4
+    return f"""<!DOCTYPE html>
+<html>
+<head>
+    <title>CSV Comparison Report</title>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <style>
+        body {{ font-family: Arial, sans-serif; margin: 20px; background: #f5f5f5; }}
+        .container {{ max-width: 1200px; margin: 0 auto; background: white; padding: 20px; }}
+        h1 {{ color: #333; }}
+        .summary {{ display: flex; gap: 20px; margin: 20px 0; }}
+        .card {{ flex: 1; padding: 20px; background: #f9f9f9; border-radius: 5px; }}
+        .card h3 {{ margin: 0; font-size: 2em; }}
+        .match {{ background: #d4edda; }}
+        .diff {{ background: #f8d7da; }}
+        table {{ width: 100%; border-collapse: collapse; margin: 20px 0; }}
+        th, td {{ padding: 10px; text-align: left; border-bottom: 1px solid #ddd; }}
+        th {{ background: #007bff; color: white; }}
+        .green {{ color: #28a745; }}
+        .red {{ color: #dc3545; }}
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>CSV Comparison Report</h1>
+
+        <div class="summary">
+            <div class="card match">
+                <h3>{results['summary']['percentage_match']:.1f}%</h3>
+                <p>Match Rate</p>
+            </div>
+            <div class="card diff">
+                <h3>{results['summary']['total_differences']}</h3>
+                <p>Total Differences</p>
+            </div>
+            <div class="card">
+                <h3>{results['summary']['identical_rows']:,}</h3>
+                <p>Identical Rows</p>
+            </div>
+        </div>
+
+        <h2>Files</h2>
+        <p><strong>File A:</strong> {results['metadata']['file_a']}</p>
+        <p><strong>File B:</strong> {results['metadata']['file_b']}</p>
+
+        <h2>Summary</h2>
+        <table>
+            <tr><td>Missing Rows</td><td>{results['summary']['missing_rows']:,}</td></tr>
+            <tr><td>Extra Rows</td><td>{results['summary']['extra_rows']:,}</td></tr>
+            <tr><td>Value Mismatches</td><td>{results['summary']['value_mismatches']:,}</td></tr>
+            <tr><td>Missing Columns</td><td>{results['summary']['missing_columns']}</td></tr>
+            <tr><td>Extra Columns</td><td>{results['summary']['extra_columns']}</td></tr>
+        </table>
+
+        <p><em>Note: This is a basic HTML report. Full interactive features will be added in Phase 4.</em></p>
+    </div>
+</body>
+</html>
+"""
 
 
 if __name__ == '__main__':

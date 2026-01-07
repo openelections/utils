@@ -11,7 +11,8 @@ from precinct_results import (
     compare_precinct_names,
     collect_precinct_names,
     check_party_variations,
-    check_party_variations_directory
+    check_party_variations_directory,
+    compare_csv_files
 )
 
 
@@ -314,6 +315,218 @@ def example_party_quality_report():
     print(f"Standardization needed: {len(results['potential_variations'])} potential issues")
 
 
+# Example 18: Compare two CSV files - basic comparison
+def example_compare_csv_basic():
+    """Compare two CSV files and display results in terminal"""
+    results = compare_csv_files(
+        'original_data.csv',
+        'corrected_data.csv',
+        verbose=True
+    )
+
+    # Check results programmatically
+    if results['summary']['percentage_match'] == 100.0:
+        print("\n✓ Files are identical!")
+    else:
+        print(f"\n⚠ Files differ: {results['summary']['total_differences']} differences found")
+
+
+# Example 19: Generate web-based comparison report
+def example_compare_csv_web_report():
+    """Generate an interactive HTML comparison report"""
+    compare_csv_files(
+        '20201103__tx__travis__precinct.csv',
+        '20201103__tx__travis__precinct_corrected.csv',
+        output_format='web',
+        output_file='comparison_report.html',
+        verbose=True
+    )
+    print("\nOpen comparison_report.html in your browser to view the report")
+
+
+# Example 20: Export differences to CSV for further analysis
+def example_compare_csv_export():
+    """Compare files and export all differences to CSV"""
+    results = compare_csv_files(
+        'file_a.csv',
+        'file_b.csv',
+        csv_export='differences.csv',
+        verbose=True
+    )
+
+    # The differences.csv file can be opened in Excel or imported for analysis
+    print(f"\nDifferences exported to differences.csv")
+    print(f"Found {len(results['value_differences'])} value mismatches")
+
+
+# Example 21: Compare with custom key columns
+def example_compare_csv_custom_keys():
+    """Compare files using custom key columns"""
+    # If your CSV has different structure, specify key columns explicitly
+    results = compare_csv_files(
+        'file_a.csv',
+        'file_b.csv',
+        key_columns=['county', 'precinct', 'office', 'candidate'],
+        verbose=True
+    )
+
+
+# Example 22: Compare with column exclusions
+def example_compare_csv_ignore_columns():
+    """Compare files while ignoring certain columns"""
+    # Useful when you know certain columns will differ and don't care
+    results = compare_csv_files(
+        'file_a.csv',
+        'file_b.csv',
+        ignore_columns=['provisional', 'absentee'],  # Don't compare these
+        verbose=True
+    )
+
+
+# Example 23: Compare with numeric tolerance
+def example_compare_csv_with_tolerance():
+    """Compare files with tolerance for small numeric differences"""
+    # Ignore differences of 5 votes or less
+    results = compare_csv_files(
+        'file_a.csv',
+        'file_b.csv',
+        tolerance=5.0,
+        verbose=True
+    )
+
+    # This is useful when comparing aggregated data that may have
+    # rounding differences
+
+
+# Example 24: Quiet comparison for automation
+def example_compare_csv_quiet():
+    """Compare files quietly for use in scripts/automation"""
+    results = compare_csv_files(
+        'file_a.csv',
+        'file_b.csv',
+        verbose=False,
+        color=False
+    )
+
+    # Check results programmatically
+    if results['summary']['total_differences'] > 0:
+        print(f"FAIL: {results['summary']['total_differences']} differences")
+        exit(1)
+    else:
+        print("PASS: Files match")
+        exit(0)
+
+
+# Example 25: Analyze specific types of differences
+def example_compare_csv_analyze_differences():
+    """Compare files and analyze specific types of differences"""
+    results = compare_csv_files(
+        'file_a.csv',
+        'file_b.csv',
+        verbose=False
+    )
+
+    # Check for vote total discrepancies
+    print("\n=== Vote Total Analysis ===")
+    for vote_type, diff in results['vote_totals']['differences'].items():
+        if diff != 0:
+            total_a = results['vote_totals']['file_a'][vote_type]
+            total_b = results['vote_totals']['file_b'][vote_type]
+            pct_diff = (diff / total_a * 100) if total_a > 0 else 0
+            print(f"{vote_type}:")
+            print(f"  File A: {total_a:,}")
+            print(f"  File B: {total_b:,}")
+            print(f"  Difference: {diff:+,} ({pct_diff:+.2f}%)")
+
+    # Analyze value mismatches by column
+    print("\n=== Value Mismatches by Column ===")
+    mismatches_by_column = {}
+    for diff in results['value_differences']:
+        col = diff['column']
+        mismatches_by_column[col] = mismatches_by_column.get(col, 0) + 1
+
+    for col, count in sorted(mismatches_by_column.items()):
+        print(f"{col}: {count} mismatch(es)")
+
+
+# Example 26: Generate both CLI and web reports
+def example_compare_csv_both_outputs():
+    """Generate both terminal output and HTML report"""
+    compare_csv_files(
+        'file_a.csv',
+        'file_b.csv',
+        output_format='both',
+        output_file='comparison_report.html',
+        csv_export='differences.csv',
+        verbose=True
+    )
+
+
+# Example 27: Data quality validation workflow
+def example_compare_csv_quality_workflow():
+    """Complete data quality validation workflow"""
+    print("=== Data Quality Validation Workflow ===\n")
+
+    # Step 1: Compare original vs processed
+    print("Step 1: Comparing original vs processed data...")
+    results = compare_csv_files(
+        'original.csv',
+        'processed.csv',
+        csv_export='validation_differences.csv',
+        verbose=False
+    )
+
+    # Step 2: Check if differences are within acceptable thresholds
+    acceptable_error_rate = 1.0  # 1% error rate acceptable
+    error_rate = 100.0 - results['summary']['percentage_match']
+
+    print(f"Match rate: {results['summary']['percentage_match']:.2f}%")
+    print(f"Error rate: {error_rate:.2f}%")
+
+    if error_rate <= acceptable_error_rate:
+        print("✓ PASS: Error rate within acceptable threshold")
+    else:
+        print("✗ FAIL: Error rate exceeds threshold")
+        print(f"\nDifferences:")
+        print(f"  Missing rows: {results['summary']['missing_rows']}")
+        print(f"  Extra rows: {results['summary']['extra_rows']}")
+        print(f"  Value mismatches: {results['summary']['value_mismatches']}")
+
+    # Step 3: Generate detailed report for review
+    if error_rate > acceptable_error_rate:
+        print("\nGenerating detailed report for manual review...")
+        compare_csv_files(
+            'original.csv',
+            'processed.csv',
+            output_format='web',
+            output_file='validation_report.html',
+            verbose=False
+        )
+        print("Report saved to: validation_report.html")
+
+
+# Example 28: Compare statewide files before publishing
+def example_compare_csv_publication_check():
+    """Compare statewide files before publishing to ensure quality"""
+    # Compare the new statewide file against the previous version
+    results = compare_csv_files(
+        '20201103__tx__general__precinct.csv',
+        '20221108__tx__general__precinct.csv',
+        output_format='both',
+        output_file='publication_check.html',
+        csv_export='changes.csv',
+        verbose=True
+    )
+
+    # Generate a summary report
+    print("\n=== Publication Readiness Check ===")
+    print(f"Files compared: ")
+    print(f"  2020 Election: {results['metadata']['row_count_a']:,} rows")
+    print(f"  2022 Election: {results['metadata']['row_count_b']:,} rows")
+    print(f"\nStructure check:")
+    print(f"  Columns match: {results['summary']['missing_columns'] == 0 and results['summary']['extra_columns'] == 0}")
+
+
 if __name__ == '__main__':
     # Run the basic example
     print("Running basic Texas 2020 example...")
@@ -338,6 +551,17 @@ if __name__ == '__main__':
     # example_party_variations_strict()
     # example_party_variations_quiet()
     # example_party_quality_report()
+    # example_compare_csv_basic()
+    # example_compare_csv_web_report()
+    # example_compare_csv_export()
+    # example_compare_csv_custom_keys()
+    # example_compare_csv_ignore_columns()
+    # example_compare_csv_with_tolerance()
+    # example_compare_csv_quiet()
+    # example_compare_csv_analyze_differences()
+    # example_compare_csv_both_outputs()
+    # example_compare_csv_quality_workflow()
+    # example_compare_csv_publication_check()
 
     print("\nTo use this in your openelections-data-* repository:")
     print("1. Copy precinct_results.py to your repository")
@@ -345,4 +569,5 @@ if __name__ == '__main__':
     print("   from precinct_results import generate_statewide_precinct_file")
     print("   from precinct_results import compare_precinct_names")
     print("   from precinct_results import check_party_variations")
+    print("   from precinct_results import compare_csv_files")
     print("3. Call them with your state's parameters")
