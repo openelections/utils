@@ -1624,66 +1624,825 @@ def _format_web_output(results: Dict[str, Any]) -> str:
     Returns:
         HTML string
     """
-    # This is a placeholder - full implementation in Phase 4
-    return f"""<!DOCTYPE html>
-<html>
+    import json
+    from html import escape
+
+    metadata = results['metadata']
+    summary = results['summary']
+    col_diff = results['column_differences']
+    row_diff = results['row_differences']
+    value_diffs = results['value_differences']
+    vote_totals = results['vote_totals']
+    key_columns = metadata['key_columns']
+
+    # Build JavaScript data for interactive features
+    js_value_diffs = []
+    for diff in value_diffs:
+        row_key_str = ' | '.join([f"{k}: {v}" for k, v in diff['row_key'].items()])
+        js_value_diffs.append({
+            'row_key': row_key_str,
+            'row_key_dict': diff['row_key'],
+            'column': diff['column'],
+            'value_a': diff['value_a'],
+            'value_b': diff['value_b'],
+            'difference': diff['difference']
+        })
+
+    js_missing_rows = []
+    for row in row_diff['missing_rows']:
+        row_key_str = ' | '.join([f"{k}: {row.get(k, '')}" for k in key_columns])
+        js_missing_rows.append({
+            'row_key': row_key_str,
+            'data': {k: row.get(k, '') for k in key_columns}
+        })
+
+    js_extra_rows = []
+    for row in row_diff['extra_rows']:
+        row_key_str = ' | '.join([f"{k}: {row.get(k, '')}" for k in key_columns])
+        js_extra_rows.append({
+            'row_key': row_key_str,
+            'data': {k: row.get(k, '') for k in key_columns}
+        })
+
+    # Calculate match icon
+    match_pct = summary['percentage_match']
+    if match_pct == 100.0:
+        match_icon = "✓"
+        match_class = "perfect-match"
+    elif match_pct >= 95.0:
+        match_icon = "~"
+        match_class = "good-match"
+    else:
+        match_icon = "✗"
+        match_class = "poor-match"
+
+    # Generate HTML
+    html = f"""<!DOCTYPE html>
+<html lang="en">
 <head>
-    <title>CSV Comparison Report</title>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>CSV Comparison Report</title>
     <style>
-        body {{ font-family: Arial, sans-serif; margin: 20px; background: #f5f5f5; }}
-        .container {{ max-width: 1200px; margin: 0 auto; background: white; padding: 20px; }}
-        h1 {{ color: #333; }}
-        .summary {{ display: flex; gap: 20px; margin: 20px 0; }}
-        .card {{ flex: 1; padding: 20px; background: #f9f9f9; border-radius: 5px; }}
-        .card h3 {{ margin: 0; font-size: 2em; }}
-        .match {{ background: #d4edda; }}
-        .diff {{ background: #f8d7da; }}
-        table {{ width: 100%; border-collapse: collapse; margin: 20px 0; }}
-        th, td {{ padding: 10px; text-align: left; border-bottom: 1px solid #ddd; }}
-        th {{ background: #007bff; color: white; }}
-        .green {{ color: #28a745; }}
-        .red {{ color: #dc3545; }}
+        * {{
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+        }}
+
+        body {{
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            padding: 20px;
+            line-height: 1.6;
+        }}
+
+        .container {{
+            max-width: 1400px;
+            margin: 0 auto;
+            background: white;
+            border-radius: 10px;
+            box-shadow: 0 10px 40px rgba(0,0,0,0.2);
+            overflow: hidden;
+        }}
+
+        .header {{
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            padding: 30px;
+            text-align: center;
+        }}
+
+        .header h1 {{
+            font-size: 2.5em;
+            margin-bottom: 10px;
+        }}
+
+        .header p {{
+            opacity: 0.9;
+            font-size: 1.1em;
+        }}
+
+        .content {{
+            padding: 30px;
+        }}
+
+        .summary-cards {{
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 20px;
+            margin: 30px 0;
+        }}
+
+        .card {{
+            padding: 20px;
+            border-radius: 8px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+            text-align: center;
+            transition: transform 0.2s;
+        }}
+
+        .card:hover {{
+            transform: translateY(-5px);
+            box-shadow: 0 5px 20px rgba(0,0,0,0.15);
+        }}
+
+        .card h3 {{
+            font-size: 2.5em;
+            margin-bottom: 10px;
+        }}
+
+        .card p {{
+            color: #666;
+            font-size: 0.9em;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+        }}
+
+        .card.perfect-match {{
+            background: linear-gradient(135deg, #11998e 0%, #38ef7d 100%);
+            color: white;
+        }}
+
+        .card.perfect-match p {{
+            color: rgba(255,255,255,0.9);
+        }}
+
+        .card.good-match {{
+            background: linear-gradient(135deg, #f093fb 0%, #f5576c 100%);
+            color: white;
+        }}
+
+        .card.good-match p {{
+            color: rgba(255,255,255,0.9);
+        }}
+
+        .card.poor-match {{
+            background: linear-gradient(135deg, #fa709a 0%, #fee140 100%);
+            color: white;
+        }}
+
+        .card.poor-match p {{
+            color: rgba(255,255,255,0.9);
+        }}
+
+        .card.info {{
+            background: linear-gradient(135deg, #a8edea 0%, #fed6e3 100%);
+        }}
+
+        .card.warning {{
+            background: linear-gradient(135deg, #ffecd2 0%, #fcb69f 100%);
+        }}
+
+        .section {{
+            margin: 40px 0;
+        }}
+
+        .section-header {{
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 15px 20px;
+            background: #f8f9fa;
+            border-left: 4px solid #667eea;
+            cursor: pointer;
+            user-select: none;
+            border-radius: 5px;
+            margin-bottom: 15px;
+        }}
+
+        .section-header:hover {{
+            background: #e9ecef;
+        }}
+
+        .section-header h2 {{
+            font-size: 1.5em;
+            color: #333;
+        }}
+
+        .section-header .badge {{
+            background: #667eea;
+            color: white;
+            padding: 5px 15px;
+            border-radius: 20px;
+            font-size: 0.9em;
+            font-weight: bold;
+        }}
+
+        .section-header .toggle {{
+            font-size: 1.2em;
+            color: #667eea;
+        }}
+
+        .section-content {{
+            padding: 20px;
+            background: #f8f9fa;
+            border-radius: 5px;
+            margin-bottom: 20px;
+        }}
+
+        .section-content.collapsed {{
+            display: none;
+        }}
+
+        .filters {{
+            display: flex;
+            gap: 15px;
+            margin-bottom: 20px;
+            flex-wrap: wrap;
+        }}
+
+        .filter-input {{
+            flex: 1;
+            min-width: 200px;
+            padding: 10px 15px;
+            border: 2px solid #e9ecef;
+            border-radius: 5px;
+            font-size: 1em;
+        }}
+
+        .filter-input:focus {{
+            outline: none;
+            border-color: #667eea;
+        }}
+
+        table {{
+            width: 100%;
+            border-collapse: collapse;
+            background: white;
+            border-radius: 5px;
+            overflow: hidden;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+        }}
+
+        th {{
+            background: #667eea;
+            color: white;
+            padding: 15px;
+            text-align: left;
+            font-weight: 600;
+            text-transform: uppercase;
+            font-size: 0.85em;
+            letter-spacing: 1px;
+        }}
+
+        td {{
+            padding: 12px 15px;
+            border-bottom: 1px solid #e9ecef;
+        }}
+
+        tr:hover {{
+            background: #f8f9fa;
+        }}
+
+        .value-diff {{
+            display: grid;
+            grid-template-columns: 1fr auto 1fr;
+            gap: 10px;
+            align-items: center;
+        }}
+
+        .value-a {{
+            background: #fff5f5;
+            padding: 8px 12px;
+            border-radius: 4px;
+            border-left: 3px solid #e53e3e;
+            font-family: 'Courier New', monospace;
+        }}
+
+        .value-b {{
+            background: #f0fff4;
+            padding: 8px 12px;
+            border-radius: 4px;
+            border-left: 3px solid #38a169;
+            font-family: 'Courier New', monospace;
+        }}
+
+        .arrow {{
+            color: #667eea;
+            font-size: 1.2em;
+            font-weight: bold;
+        }}
+
+        .file-info {{
+            background: #f8f9fa;
+            padding: 20px;
+            border-radius: 5px;
+            margin-bottom: 20px;
+        }}
+
+        .file-info p {{
+            margin: 5px 0;
+        }}
+
+        .file-path {{
+            font-family: 'Courier New', monospace;
+            background: white;
+            padding: 5px 10px;
+            border-radius: 3px;
+            display: inline-block;
+            margin-left: 10px;
+        }}
+
+        .vote-totals {{
+            display: grid;
+            gap: 15px;
+        }}
+
+        .vote-row {{
+            background: white;
+            padding: 15px;
+            border-radius: 5px;
+            display: grid;
+            grid-template-columns: 200px 1fr 1fr auto;
+            gap: 15px;
+            align-items: center;
+            box-shadow: 0 2px 5px rgba(0,0,0,0.05);
+        }}
+
+        .vote-label {{
+            font-weight: 600;
+            color: #333;
+        }}
+
+        .vote-value {{
+            font-family: 'Courier New', monospace;
+            font-size: 1.1em;
+        }}
+
+        .vote-diff {{
+            font-weight: bold;
+            padding: 5px 15px;
+            border-radius: 20px;
+            text-align: center;
+        }}
+
+        .vote-diff.match {{
+            background: #d4edda;
+            color: #155724;
+        }}
+
+        .vote-diff.different {{
+            background: #fff3cd;
+            color: #856404;
+        }}
+
+        .no-data {{
+            text-align: center;
+            padding: 40px;
+            color: #666;
+            font-style: italic;
+        }}
+
+        .metadata {{
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+            gap: 15px;
+            margin: 20px 0;
+        }}
+
+        .metadata-item {{
+            background: white;
+            padding: 15px;
+            border-radius: 5px;
+            box-shadow: 0 2px 5px rgba(0,0,0,0.05);
+        }}
+
+        .metadata-label {{
+            font-weight: 600;
+            color: #667eea;
+            margin-bottom: 5px;
+            font-size: 0.85em;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+        }}
+
+        .metadata-value {{
+            font-size: 1.1em;
+            color: #333;
+        }}
+
+        .export-btn {{
+            background: #667eea;
+            color: white;
+            border: none;
+            padding: 10px 20px;
+            border-radius: 5px;
+            cursor: pointer;
+            font-size: 1em;
+            transition: background 0.2s;
+        }}
+
+        .export-btn:hover {{
+            background: #5568d3;
+        }}
+
+        .column-list {{
+            display: flex;
+            flex-wrap: wrap;
+            gap: 10px;
+        }}
+
+        .column-tag {{
+            background: #e9ecef;
+            padding: 5px 15px;
+            border-radius: 20px;
+            font-size: 0.9em;
+        }}
+
+        .column-tag.missing {{
+            background: #fff5f5;
+            color: #e53e3e;
+        }}
+
+        .column-tag.extra {{
+            background: #f0fff4;
+            color: #38a169;
+        }}
+
+        @media (max-width: 768px) {{
+            .summary-cards {{
+                grid-template-columns: 1fr;
+            }}
+
+            .vote-row {{
+                grid-template-columns: 1fr;
+            }}
+
+            .value-diff {{
+                grid-template-columns: 1fr;
+            }}
+
+            .arrow {{
+                text-align: center;
+            }}
+        }}
     </style>
 </head>
 <body>
     <div class="container">
-        <h1>CSV Comparison Report</h1>
-
-        <div class="summary">
-            <div class="card match">
-                <h3>{results['summary']['percentage_match']:.1f}%</h3>
-                <p>Match Rate</p>
-            </div>
-            <div class="card diff">
-                <h3>{results['summary']['total_differences']}</h3>
-                <p>Total Differences</p>
-            </div>
-            <div class="card">
-                <h3>{results['summary']['identical_rows']:,}</h3>
-                <p>Identical Rows</p>
-            </div>
+        <div class="header">
+            <h1>📊 CSV Comparison Report</h1>
+            <p>Generated on {escape(metadata['compared_at'])}</p>
         </div>
 
-        <h2>Files</h2>
-        <p><strong>File A:</strong> {results['metadata']['file_a']}</p>
-        <p><strong>File B:</strong> {results['metadata']['file_b']}</p>
+        <div class="content">
+            <!-- Summary Cards -->
+            <div class="summary-cards">
+                <div class="card {match_class}">
+                    <h3>{match_icon} {match_pct:.1f}%</h3>
+                    <p>Match Rate</p>
+                </div>
+                <div class="card info">
+                    <h3>{summary['identical_rows']:,}</h3>
+                    <p>Identical Rows</p>
+                </div>
+                <div class="card warning">
+                    <h3>{summary['total_differences']:,}</h3>
+                    <p>Total Differences</p>
+                </div>
+                <div class="card warning">
+                    <h3>{summary['value_mismatches']:,}</h3>
+                    <p>Value Mismatches</p>
+                </div>
+            </div>
 
-        <h2>Summary</h2>
-        <table>
-            <tr><td>Missing Rows</td><td>{results['summary']['missing_rows']:,}</td></tr>
-            <tr><td>Extra Rows</td><td>{results['summary']['extra_rows']:,}</td></tr>
-            <tr><td>Value Mismatches</td><td>{results['summary']['value_mismatches']:,}</td></tr>
-            <tr><td>Missing Columns</td><td>{results['summary']['missing_columns']}</td></tr>
-            <tr><td>Extra Columns</td><td>{results['summary']['extra_columns']}</td></tr>
-        </table>
+            <!-- File Information -->
+            <div class="section">
+                <div class="section-header" onclick="toggleSection('files')">
+                    <h2>📁 File Information</h2>
+                    <span class="toggle" id="files-toggle">▼</span>
+                </div>
+                <div class="section-content" id="files-content">
+                    <div class="metadata">
+                        <div class="metadata-item">
+                            <div class="metadata-label">File A</div>
+                            <div class="metadata-value file-path">{escape(metadata['file_a'])}</div>
+                        </div>
+                        <div class="metadata-item">
+                            <div class="metadata-label">File B</div>
+                            <div class="metadata-value file-path">{escape(metadata['file_b'])}</div>
+                        </div>
+                        <div class="metadata-item">
+                            <div class="metadata-label">Rows in File A</div>
+                            <div class="metadata-value">{metadata['row_count_a']:,}</div>
+                        </div>
+                        <div class="metadata-item">
+                            <div class="metadata-label">Rows in File B</div>
+                            <div class="metadata-value">{metadata['row_count_b']:,}</div>
+                        </div>
+                        <div class="metadata-item">
+                            <div class="metadata-label">Columns in File A</div>
+                            <div class="metadata-value">{metadata['column_count_a']}</div>
+                        </div>
+                        <div class="metadata-item">
+                            <div class="metadata-label">Columns in File B</div>
+                            <div class="metadata-value">{metadata['column_count_b']}</div>
+                        </div>
+                        <div class="metadata-item">
+                            <div class="metadata-label">Key Columns</div>
+                            <div class="metadata-value">{', '.join(key_columns)}</div>
+                        </div>
+                        <div class="metadata-item">
+                            <div class="metadata-label">Comparison Time</div>
+                            <div class="metadata-value">{escape(metadata['compared_at'])}</div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+"""
 
-        <p><em>Note: This is a basic HTML report. Full interactive features will be added in Phase 4.</em></p>
+    # Column Differences Section
+    if col_diff['missing_in_b'] or col_diff['extra_in_b']:
+        html += f"""
+            <!-- Column Differences -->
+            <div class="section">
+                <div class="section-header" onclick="toggleSection('columns')">
+                    <h2>📋 Column Differences</h2>
+                    <span class="badge">{len(col_diff['missing_in_b']) + len(col_diff['extra_in_b'])}</span>
+                    <span class="toggle" id="columns-toggle">▼</span>
+                </div>
+                <div class="section-content" id="columns-content">
+"""
+        if col_diff['missing_in_b']:
+            html += f"""
+                    <h3>Missing in File B ({len(col_diff['missing_in_b'])})</h3>
+                    <div class="column-list">
+"""
+            for col in col_diff['missing_in_b']:
+                html += f'                        <span class="column-tag missing">{escape(col)}</span>\n'
+            html += """
+                    </div>
+                    <br>
+"""
+
+        if col_diff['extra_in_b']:
+            html += f"""
+                    <h3>Extra in File B ({len(col_diff['extra_in_b'])})</h3>
+                    <div class="column-list">
+"""
+            for col in col_diff['extra_in_b']:
+                html += f'                        <span class="column-tag extra">{escape(col)}</span>\n'
+            html += """
+                    </div>
+"""
+
+        html += """
+                </div>
+            </div>
+"""
+
+    # Vote Totals Section
+    if vote_totals['file_a'] or vote_totals['file_b']:
+        all_vote_cols = sorted(set(vote_totals['file_a'].keys()) | set(vote_totals['file_b'].keys()))
+        html += f"""
+            <!-- Vote Totals -->
+            <div class="section">
+                <div class="section-header" onclick="toggleSection('votes')">
+                    <h2>🗳️ Vote Totals</h2>
+                    <span class="badge">{len(all_vote_cols)}</span>
+                    <span class="toggle" id="votes-toggle">▼</span>
+                </div>
+                <div class="section-content" id="votes-content">
+                    <div class="vote-totals">
+"""
+
+        for col in all_vote_cols:
+            total_a = vote_totals['file_a'].get(col, 0)
+            total_b = vote_totals['file_b'].get(col, 0)
+            diff = vote_totals['differences'].get(col, 0)
+            diff_class = "match" if diff == 0 else "different"
+            diff_text = "✓ Match" if diff == 0 else f"Δ {diff:+,}"
+
+            html += f"""
+                        <div class="vote-row">
+                            <div class="vote-label">{escape(col)}</div>
+                            <div class="vote-value">File A: {total_a:,}</div>
+                            <div class="vote-value">File B: {total_b:,}</div>
+                            <div class="vote-diff {diff_class}">{diff_text}</div>
+                        </div>
+"""
+
+        html += """
+                    </div>
+                </div>
+            </div>
+"""
+
+    # Missing Rows Section
+    if summary['missing_rows'] > 0:
+        html += f"""
+            <!-- Missing Rows -->
+            <div class="section">
+                <div class="section-header" onclick="toggleSection('missing')">
+                    <h2>❌ Missing Rows</h2>
+                    <span class="badge">{summary['missing_rows']:,}</span>
+                    <span class="toggle" id="missing-toggle">▼</span>
+                </div>
+                <div class="section-content" id="missing-content">
+                    <div class="filters">
+                        <input type="text" class="filter-input" id="missing-filter"
+                               placeholder="Filter missing rows..."
+                               onkeyup="filterTable('missing-table', 'missing-filter')">
+                    </div>
+                    <table id="missing-table">
+                        <thead>
+                            <tr>
+"""
+        for col in key_columns:
+            html += f"                                <th>{escape(col)}</th>\n"
+        html += """
+                            </tr>
+                        </thead>
+                        <tbody>
+"""
+
+        for row in row_diff['missing_rows'][:1000]:  # Limit to 1000 rows for performance
+            html += "                            <tr>\n"
+            for col in key_columns:
+                html += f"                                <td>{escape(str(row.get(col, '')))}</td>\n"
+            html += "                            </tr>\n"
+
+        if summary['missing_rows'] > 1000:
+            html += f"""
+                            <tr>
+                                <td colspan="{len(key_columns)}" style="text-align: center; font-style: italic; color: #666;">
+                                    ... and {summary['missing_rows'] - 1000:,} more rows (showing first 1,000)
+                                </td>
+                            </tr>
+"""
+
+        html += """
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+"""
+
+    # Extra Rows Section
+    if summary['extra_rows'] > 0:
+        html += f"""
+            <!-- Extra Rows -->
+            <div class="section">
+                <div class="section-header" onclick="toggleSection('extra')">
+                    <h2>➕ Extra Rows</h2>
+                    <span class="badge">{summary['extra_rows']:,}</span>
+                    <span class="toggle" id="extra-toggle">▼</span>
+                </div>
+                <div class="section-content" id="extra-content">
+                    <div class="filters">
+                        <input type="text" class="filter-input" id="extra-filter"
+                               placeholder="Filter extra rows..."
+                               onkeyup="filterTable('extra-table', 'extra-filter')">
+                    </div>
+                    <table id="extra-table">
+                        <thead>
+                            <tr>
+"""
+        for col in key_columns:
+            html += f"                                <th>{escape(col)}</th>\n"
+        html += """
+                            </tr>
+                        </thead>
+                        <tbody>
+"""
+
+        for row in row_diff['extra_rows'][:1000]:  # Limit to 1000 rows for performance
+            html += "                            <tr>\n"
+            for col in key_columns:
+                html += f"                                <td>{escape(str(row.get(col, '')))}</td>\n"
+            html += "                            </tr>\n"
+
+        if summary['extra_rows'] > 1000:
+            html += f"""
+                            <tr>
+                                <td colspan="{len(key_columns)}" style="text-align: center; font-style: italic; color: #666;">
+                                    ... and {summary['extra_rows'] - 1000:,} more rows (showing first 1,000)
+                                </td>
+                            </tr>
+"""
+
+        html += """
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+"""
+
+    # Value Mismatches Section
+    if summary['value_mismatches'] > 0:
+        html += f"""
+            <!-- Value Mismatches -->
+            <div class="section">
+                <div class="section-header" onclick="toggleSection('mismatches')">
+                    <h2>⚠️ Value Mismatches</h2>
+                    <span class="badge">{summary['value_mismatches']:,}</span>
+                    <span class="toggle" id="mismatches-toggle">▼</span>
+                </div>
+                <div class="section-content" id="mismatches-content">
+                    <div class="filters">
+                        <input type="text" class="filter-input" id="mismatch-filter"
+                               placeholder="Filter value mismatches..."
+                               onkeyup="filterTable('mismatch-table', 'mismatch-filter')">
+                    </div>
+                    <table id="mismatch-table">
+                        <thead>
+                            <tr>
+                                <th>Row</th>
+                                <th>Column</th>
+                                <th>Values</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+"""
+
+        for diff in value_diffs[:1000]:  # Limit to 1000 for performance
+            row_key_str = ' | '.join([f"{k}: {v}" for k, v in diff['row_key'].items()])
+            diff_display = ""
+            if diff['difference'] is not None:
+                diff_display = f" (Δ {diff['difference']:+})"
+
+            html += f"""
+                            <tr>
+                                <td>{escape(row_key_str)}</td>
+                                <td><strong>{escape(diff['column'])}</strong></td>
+                                <td>
+                                    <div class="value-diff">
+                                        <div class="value-a">File A: {escape(diff['value_a'])}</div>
+                                        <div class="arrow">→</div>
+                                        <div class="value-b">File B: {escape(diff['value_b'])}{diff_display}</div>
+                                    </div>
+                                </td>
+                            </tr>
+"""
+
+        if summary['value_mismatches'] > 1000:
+            html += f"""
+                            <tr>
+                                <td colspan="3" style="text-align: center; font-style: italic; color: #666;">
+                                    ... and {summary['value_mismatches'] - 1000:,} more mismatches (showing first 1,000)
+                                </td>
+                            </tr>
+"""
+
+        html += """
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+"""
+
+    # If no differences
+    if summary['total_differences'] == 0:
+        html += """
+            <div class="no-data">
+                <h2>🎉 Perfect Match!</h2>
+                <p>The two CSV files are identical. No differences found.</p>
+            </div>
+"""
+
+    # Footer with JavaScript
+    html += """
+        </div>
     </div>
+
+    <script>
+        function toggleSection(sectionId) {
+            const content = document.getElementById(sectionId + '-content');
+            const toggle = document.getElementById(sectionId + '-toggle');
+
+            if (content.classList.contains('collapsed')) {
+                content.classList.remove('collapsed');
+                toggle.textContent = '▼';
+            } else {
+                content.classList.add('collapsed');
+                toggle.textContent = '▶';
+            }
+        }
+
+        function filterTable(tableId, filterId) {
+            const input = document.getElementById(filterId);
+            const filter = input.value.toLowerCase();
+            const table = document.getElementById(tableId);
+            const rows = table.getElementsByTagName('tr');
+
+            for (let i = 1; i < rows.length; i++) {
+                const row = rows[i];
+                const text = row.textContent.toLowerCase();
+
+                if (text.includes(filter)) {
+                    row.style.display = '';
+                } else {
+                    row.style.display = 'none';
+                }
+            }
+        }
+    </script>
 </body>
 </html>
 """
+
+    return html
 
 
 if __name__ == '__main__':
