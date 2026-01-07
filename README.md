@@ -514,6 +514,278 @@ print(f"Match rate: {results['summary']['percentage_match']:.1f}%")
 
 See `example_usage.py` for more comprehensive examples.
 
+## County vs Precinct Totals Comparison
+
+A specialized utility for comparing county-level summary files to aggregated precinct-level totals.
+
+### Overview
+
+The `compare_county_to_precinct_totals()` function verifies that county-level election summary files match the aggregated totals from their corresponding precinct-level files. This is essential for data quality assurance when you have both county-level summaries and detailed precinct breakdowns.
+
+**Use case**: When given a county name (e.g., "adams") and election prefix (e.g., "20251104__pa__general"), this tool:
+1. Reads the county summary file: `20251104__pa__general__adams__county.csv`
+2. Reads the precinct file: `20251104__pa__general__adams__precinct.csv`
+3. Aggregates all precinct-level data by office/candidate/party
+4. Compares the aggregated precinct totals to the county summary
+5. Reports any differences
+
+### Features
+
+- **Automatic aggregation**: Sums precinct-level data across all precincts
+- **Flexible matching**: Uses office, district, candidate, and party to match rows
+- **Vote column detection**: Automatically identifies all vote type columns
+- **Multiple output formats**: Terminal (CLI) or HTML web report
+- **Numeric tolerance**: Optionally ignore small rounding differences
+- **Detailed reporting**: Shows exactly which candidates have mismatches
+- **Batch processing**: Easy to check multiple counties
+
+### Quick Start
+
+#### Basic Comparison
+```python
+from precinct_results import compare_county_to_precinct_totals
+
+results = compare_county_to_precinct_totals(
+    election_prefix='20251104__pa__general',
+    county_name='adams',
+    directory='data/2025'
+)
+
+if results['summary']['total_differences'] == 0:
+    print("County and precinct totals match!")
+```
+
+#### Command-Line Usage
+```bash
+# Basic comparison
+python compare_county_precinct.py 20251104__pa__general adams
+
+# With custom directory
+python compare_county_precinct.py 20251104__pa__general adams --directory data/2025
+
+# Generate HTML report
+python compare_county_precinct.py 20251104__pa__general adams --web --output report.html
+
+# Check multiple counties
+for county in adams allegheny beaver; do
+    python compare_county_precinct.py 20251104__pa__general $county
+done
+```
+
+### API Reference
+
+#### `compare_county_to_precinct_totals()`
+
+Compare county-level summary totals to aggregated precinct-level totals.
+
+**Parameters:**
+
+- `election_prefix` (str): Election prefix (e.g., "20251104__pa__general")
+- `county_name` (str): County name (e.g., "adams")
+- `directory` (str, optional): Directory containing CSV files (default: '.')
+- `tolerance` (float, optional): Numeric comparison tolerance (default: 0.0)
+- `verbose` (bool, optional): Print detailed output (default: True)
+- `output_format` (str, optional): Output format - 'cli', 'web', or 'both' (default: 'cli')
+- `output_file` (str, optional): Optional output file path
+
+**Returns:**
+
+Dictionary with comparison results containing:
+- `metadata`: File information and comparison details
+- `summary`: High-level statistics (total differences, match percentage)
+- `differences`: List of rows with value mismatches
+- `missing_in_precinct`: Rows in county file but not in precinct data
+- `missing_in_county`: Rows in precinct data but not in county file
+
+**Raises:**
+- `FileNotFoundError`: If either file doesn't exist
+- `ValueError`: If files are invalid or incompatible
+
+### Usage Examples
+
+#### Generate Web Report
+```python
+compare_county_to_precinct_totals(
+    election_prefix='20251104__pa__general',
+    county_name='adams',
+    directory='data/2025',
+    output_format='web',
+    output_file='adams_county_check.html'
+)
+```
+
+#### With Tolerance for Rounding
+```python
+# Ignore differences of 5 votes or less
+results = compare_county_to_precinct_totals(
+    election_prefix='20251104__pa__general',
+    county_name='adams',
+    directory='data/2025',
+    tolerance=5.0
+)
+```
+
+#### Batch Check Multiple Counties
+```python
+counties = ['adams', 'allegheny', 'beaver', 'berks', 'blair']
+election_prefix = '20251104__pa__general'
+
+issues_found = []
+for county in counties:
+    results = compare_county_to_precinct_totals(
+        election_prefix=election_prefix,
+        county_name=county,
+        directory='data/2025',
+        verbose=False
+    )
+
+    if results['summary']['total_differences'] > 0:
+        issues_found.append({
+            'county': county,
+            'differences': results['summary']['total_differences']
+        })
+
+if issues_found:
+    print(f"Counties with issues: {len(issues_found)}")
+    for item in issues_found:
+        print(f"  {item['county']}: {item['differences']} differences")
+else:
+    print("All counties match perfectly!")
+```
+
+### Command-Line Interface
+
+The `compare_county_precinct.py` script provides easy command-line access:
+
+```bash
+# Basic usage
+python compare_county_precinct.py ELECTION_PREFIX COUNTY_NAME
+
+# Options
+  -d, --directory DIR    Directory containing CSV files (default: current)
+  -t, --tolerance NUM    Numeric comparison tolerance (default: 0.0)
+  --web                  Generate HTML web report
+  -o, --output FILE      Output file path
+  --quiet                Suppress verbose output
+
+# Exit codes
+  0: Files match
+  1: Differences found
+  2: File not found
+  3: Other error
+```
+
+### Output Examples
+
+#### Terminal Output
+```
+County vs Precinct Totals Comparison
+======================================================================
+Election: 20251104__pa__general
+County: adams
+
+County file rows: 45
+Precinct file rows: 523
+Aggregated unique rows: 45
+
+✓ MATCH: County and precinct totals match perfectly!
+```
+
+When differences exist:
+```
+✗ MISMATCH: Found 3 issue(s)
+
+  Value mismatches: 3
+
+Value Mismatches:
+----------------------------------------------------------------------
+
+1. office: President | candidate: Jane Smith | party: DEM
+   Vote type: election_day
+   County total:      12,345
+   Precinct total:    12,350
+   Difference:            +5
+
+2. office: U.S. Senate | candidate: John Doe | party: REP
+   Vote type: mail
+   County total:       8,234
+   Precinct total:     8,230
+   Difference:            -4
+```
+
+#### Web Report
+The HTML report includes:
+- Summary cards showing match status and total issues
+- Detailed table of all value mismatches
+- Vote type breakdown showing county vs precinct totals
+- Difference highlighting with color coding
+
+### How It Works
+
+1. **Load Files**: Reads both county and precinct CSV files
+2. **Identify Vote Columns**: Automatically detects vote type columns (excluding standard columns like county, precinct, office, etc.)
+3. **Aggregate Precinct Data**: Groups precinct data by office, district, candidate, and party, summing all vote totals
+4. **Compare**: Matches aggregated precinct totals to county summary totals
+5. **Report**: Shows any discrepancies found
+
+### Expected File Structure
+
+**County file**: `{election_prefix}__{county}__county.csv`
+- One row per office/candidate/party
+- Contains aggregated vote totals for the entire county
+
+**Precinct file**: `{election_prefix}__{county}__precinct.csv`
+- Multiple rows per office/candidate/party (one per precinct)
+- Contains vote totals broken down by precinct
+
+Both files should have:
+- Standard columns: `county`, `precinct` (precinct file only), `office`, `district`, `candidate`, `party`
+- Vote columns: Any combination like `votes`, `early_voting`, `election_day`, `mail`, `absentee`, `provisional`
+
+### Integration Example
+
+```python
+# Validate all counties after data processing
+import os
+from precinct_results import compare_county_to_precinct_totals
+
+election_prefix = '20251104__pa__general'
+directory = 'data/2025'
+
+# Find all county files
+county_files = [f for f in os.listdir(directory)
+                if f.startswith(election_prefix) and f.endswith('__county.csv')]
+
+counties = [f.replace(f'{election_prefix}__', '').replace('__county.csv', '')
+            for f in county_files]
+
+# Validate each county
+for county in counties:
+    print(f"Validating {county}...")
+    results = compare_county_to_precinct_totals(
+        election_prefix=election_prefix,
+        county_name=county,
+        directory=directory,
+        verbose=False
+    )
+
+    if results['summary']['total_differences'] == 0:
+        print(f"  ✓ {county}: Match")
+    else:
+        print(f"  ✗ {county}: {results['summary']['total_differences']} differences")
+        # Generate detailed report
+        compare_county_to_precinct_totals(
+            election_prefix=election_prefix,
+            county_name=county,
+            directory=directory,
+            output_format='web',
+            output_file=f'{county}_discrepancies.html',
+            verbose=False
+        )
+```
+
+See `example_usage.py` for more comprehensive examples.
+
 ## License
 
 See LICENSE file for details.
