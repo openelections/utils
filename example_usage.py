@@ -12,7 +12,8 @@ from precinct_results import (
     collect_precinct_names,
     check_party_variations,
     check_party_variations_directory,
-    compare_csv_files
+    compare_csv_files,
+    compare_county_to_precinct_totals
 )
 
 
@@ -527,6 +528,88 @@ def example_compare_csv_publication_check():
     print(f"  Columns match: {results['summary']['missing_columns'] == 0 and results['summary']['extra_columns'] == 0}")
 
 
+# Example 29: Compare county summary to aggregated precinct totals
+def example_compare_county_precinct_basic():
+    """Compare county-level summary to aggregated precinct totals"""
+    results = compare_county_to_precinct_totals(
+        election_prefix='20251104__pa__general',
+        county_name='adams',
+        directory='data/2025',
+        verbose=True
+    )
+
+    # Check results
+    if results['summary']['total_differences'] == 0:
+        print("\n✓ County and precinct totals match perfectly!")
+    else:
+        print(f"\n✗ Found {results['summary']['total_differences']} discrepancies")
+
+
+# Example 30: Generate web report for county vs precinct comparison
+def example_compare_county_precinct_web():
+    """Generate HTML report comparing county to precinct totals"""
+    compare_county_to_precinct_totals(
+        election_prefix='20251104__pa__general',
+        county_name='adams',
+        directory='data/2025',
+        output_format='web',
+        output_file='adams_county_check.html',
+        verbose=True
+    )
+
+
+# Example 31: Compare with tolerance for small differences
+def example_compare_county_precinct_tolerance():
+    """Compare county to precinct with tolerance for rounding errors"""
+    results = compare_county_to_precinct_totals(
+        election_prefix='20251104__pa__general',
+        county_name='adams',
+        directory='data/2025',
+        tolerance=5.0,  # Ignore differences of 5 votes or less
+        verbose=True
+    )
+
+
+# Example 32: Automated quality check for multiple counties
+def example_county_precinct_batch_check():
+    """Check multiple counties in a batch"""
+    counties = ['adams', 'allegheny', 'beaver', 'berks', 'blair']
+    election_prefix = '20251104__pa__general'
+
+    issues_found = []
+
+    for county in counties:
+        print(f"\nChecking {county} County...")
+        try:
+            results = compare_county_to_precinct_totals(
+                election_prefix=election_prefix,
+                county_name=county,
+                directory='data/2025',
+                verbose=False
+            )
+
+            if results['summary']['total_differences'] > 0:
+                issues_found.append({
+                    'county': county,
+                    'differences': results['summary']['total_differences']
+                })
+                print(f"  ✗ {results['summary']['total_differences']} issue(s) found")
+            else:
+                print(f"  ✓ Match")
+
+        except FileNotFoundError as e:
+            print(f"  ⚠ Files not found: {e}")
+
+    # Summary
+    print("\n" + "=" * 70)
+    if issues_found:
+        print(f"Counties with issues: {len(issues_found)}")
+        for item in issues_found:
+            print(f"  {item['county']}: {item['differences']} differences")
+    else:
+        print("✓ All counties match perfectly!")
+
+
 if __name__ == '__main__':
     # Run the basic example
     print("Running basic Texas 2020 example...")
@@ -562,6 +645,10 @@ if __name__ == '__main__':
     # example_compare_csv_both_outputs()
     # example_compare_csv_quality_workflow()
     # example_compare_csv_publication_check()
+    # example_compare_county_precinct_basic()
+    # example_compare_county_precinct_web()
+    # example_compare_county_precinct_tolerance()
+    # example_county_precinct_batch_check()
 
     print("\nTo use this in your openelections-data-* repository:")
     print("1. Copy precinct_results.py to your repository")
@@ -570,4 +657,5 @@ if __name__ == '__main__':
     print("   from precinct_results import compare_precinct_names")
     print("   from precinct_results import check_party_variations")
     print("   from precinct_results import compare_csv_files")
+    print("   from precinct_results import compare_county_to_precinct_totals")
     print("3. Call them with your state's parameters")

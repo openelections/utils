@@ -2445,6 +2445,567 @@ def _format_web_output(results: Dict[str, Any]) -> str:
     return html
 
 
+def compare_county_to_precinct_totals(
+    election_prefix: str,
+    county_name: str,
+    directory: str = '.',
+    tolerance: float = 0.0,
+    verbose: bool = True,
+    output_format: str = 'cli',
+    output_file: Optional[str] = None
+) -> Dict[str, Any]:
+    """
+    Compare county-level summary totals to aggregated precinct-level totals.
+
+    This function reads both a county-level summary file and its corresponding
+    precinct-level file, aggregates the precinct data, and reports any differences
+    between the county summary and the aggregated precinct totals.
+
+    Args:
+        election_prefix: Election prefix (e.g., "20251104__pa__general")
+        county_name: County name (e.g., "adams")
+        directory: Directory containing the CSV files (default: current directory)
+        tolerance: Numeric comparison tolerance (default: 0.0)
+        verbose: Print detailed output (default: True)
+        output_format: Output format - 'cli', 'web', or 'both' (default: 'cli')
+        output_file: Optional output file path
+
+    Returns:
+        Dictionary with comparison results containing:
+        - metadata: File info and comparison details
+        - summary: High-level statistics
+        - differences: List of rows with mismatches
+        - vote_totals: Aggregated vote totals and differences
+
+    Raises:
+        FileNotFoundError: If either file doesn't exist
+        ValueError: If files are invalid or incompatible
+
+    Example:
+        >>> results = compare_county_to_precinct_totals(
+        ...     election_prefix='20251104__pa__general',
+        ...     county_name='adams',
+        ...     directory='data/2025'
+        ... )
+        >>> if results['summary']['total_differences'] == 0:
+        ...     print("County and precinct totals match!")
+    """
+    # Normalize county name to lowercase
+    county_lower = county_name.lower()
+
+    # Build file paths
+    county_file = os.path.join(directory, f"{election_prefix}__{county_lower}__county.csv")
+    precinct_file = os.path.join(directory, f"{election_prefix}__{county_lower}__precinct.csv")
+
+    if verbose:
+        print(f"County vs Precinct Totals Comparison")
+        print("=" * 70)
+        print(f"Election: {election_prefix}")
+        print(f"County: {county_name}")
+        print(f"County file: {county_file}")
+        print(f"Precinct file: {precinct_file}")
+        print()
+
+    # Check if files exist
+    if not os.path.exists(county_file):
+        raise FileNotFoundError(f"County file not found: {county_file}")
+    if not os.path.exists(precinct_file):
+        raise FileNotFoundError(f"Precinct file not found: {precinct_file}")
+
+    # Load county file
+    if verbose:
+        print("Loading county-level summary...")
+
+    county_rows, county_columns, _ = _load_and_validate_csv(county_file)
+
+    # Load precinct file
+    if verbose:
+        print("Loading precinct-level data...")
+
+    precinct_rows, precinct_columns, _ = _load_and_validate_csv(precinct_file)
+
+    # Identify vote columns (non-standard columns)
+    county_vote_cols = [col for col in county_columns if col not in STANDARD_COLUMNS]
+    precinct_vote_cols = [col for col in precinct_columns if col not in STANDARD_COLUMNS]
+
+    # Check that vote columns match
+    county_vote_set = set(county_vote_cols)
+    precinct_vote_set = set(precinct_vote_cols)
+
+    if county_vote_set != precinct_vote_set:
+        missing_in_precinct = county_vote_set - precinct_vote_set
+        extra_in_precinct = precinct_vote_set - county_vote_set
+
+        if missing_in_precinct or extra_in_precinct:
+            print("Warning: Vote column mismatch between files")
+            if missing_in_precinct:
+                print(f"  Missing in precinct file: {missing_in_precinct}")
+            if extra_in_precinct:
+                print(f"  Extra in precinct file: {extra_in_precinct}")
+
+    # Use common vote columns
+    vote_columns = sorted(county_vote_set & precinct_vote_set)
+
+    if verbose:
+        print(f"County file: {len(county_rows)} rows")
+        print(f"Precinct file: {len(precinct_rows)} rows")
+        print(f"Vote columns: {vote_columns}")
+        print()
+
+    # Determine key columns for aggregation (everything except precinct and vote columns)
+    key_columns = [col for col in precinct_columns if col in STANDARD_COLUMNS and col != 'precinct']
+
+    if verbose:
+        print(f"Aggregating precinct data by: {key_columns}")
+        print()
+
+    # Aggregate precinct data
+    aggregated_precinct = {}
+
+    for row in precinct_rows:
+        # Build key from non-precinct standard columns
+        key_values = tuple(str(row.get(col, '')).strip().lower() for col in key_columns)
+
+        if key_values not in aggregated_precinct:
+            # Initialize aggregation
+            aggregated_precinct[key_values] = {
+                **{col: row.get(col, '') for col in key_columns},
+                **{vote_col: 0 for vote_col in vote_columns}
+            }
+
+        # Add vote totals
+        for vote_col in vote_columns:
+            value = row.get(vote_col, '')
+            if value:
+                try:
+                    aggregated_precinct[key_values][vote_col] += int(float(str(value).strip()))
+                except (ValueError, TypeError):
+                    pass  # Skip non-numeric values
+
+    if verbose:
+        print(f"Aggregated to {len(aggregated_precinct)} unique rows")
+        print()
+
+    # Build index of county data
+    county_index = {}
+    for row in county_rows:
+        key_values = tuple(str(row.get(col, '')).strip().lower() for col in key_columns)
+        county_index[key_values] = row
+
+    # Compare aggregated precinct data to county data
+    if verbose:
+        print("Comparing totals...")
+        print()
+
+    differences = []
+    all_keys = set(county_index.keys()) | set(aggregated_precinct.keys())
+
+    missing_in_precinct = []
+    missing_in_county = []
+
+    for key in sorted(all_keys):
+        county_row = county_index.get(key)
+        precinct_row = aggregated_precinct.get(key)
+
+        # Build readable key dict
+        key_dict = dict(zip(key_columns, key)) if county_row or precinct_row else {}
+
+        if county_row and precinct_row:
+            # Both exist - compare vote totals
+            for vote_col in vote_columns:
+                county_val = county_row.get(vote_col, '')
+                precinct_val = precinct_row.get(vote_col, 0)
+
+                # Normalize county value
+                if county_val:
+                    try:
+                        county_val = int(float(str(county_val).strip()))
+                    except (ValueError, TypeError):
+                        county_val = 0
+                else:
+                    county_val = 0
+
+                # Check if values differ
+                diff = precinct_val - county_val
+
+                if tolerance > 0:
+                    if abs(diff) <= tolerance:
+                        continue  # Within tolerance
+
+                if diff != 0:
+                    # Get original (non-lowercased) values for display
+                    display_key = {col: county_row.get(col, precinct_row.get(col, '')) for col in key_columns}
+
+                    differences.append({
+                        'row_key': display_key,
+                        'vote_type': vote_col,
+                        'county_total': county_val,
+                        'precinct_total': precinct_val,
+                        'difference': diff
+                    })
+
+        elif county_row and not precinct_row:
+            # In county but not in aggregated precinct data
+            display_key = {col: county_row.get(col, '') for col in key_columns}
+            missing_in_precinct.append(display_key)
+
+        elif precinct_row and not county_row:
+            # In aggregated precinct but not in county
+            display_key = {col: precinct_row.get(col, '') for col in key_columns}
+            missing_in_county.append(display_key)
+
+    # Calculate summary statistics
+    total_diffs = len(differences)
+    total_missing_in_precinct = len(missing_in_precinct)
+    total_missing_in_county = len(missing_in_county)
+    total_issues = total_diffs + total_missing_in_precinct + total_missing_in_county
+
+    # Build results
+    results = {
+        'metadata': {
+            'election_prefix': election_prefix,
+            'county_name': county_name,
+            'county_file': county_file,
+            'precinct_file': precinct_file,
+            'compared_at': datetime.now().isoformat(),
+            'county_rows': len(county_rows),
+            'precinct_rows': len(precinct_rows),
+            'aggregated_rows': len(aggregated_precinct),
+            'key_columns': key_columns,
+            'vote_columns': vote_columns,
+        },
+        'summary': {
+            'total_differences': total_issues,
+            'value_mismatches': total_diffs,
+            'missing_in_precinct': total_missing_in_precinct,
+            'missing_in_county': total_missing_in_county,
+            'match_percentage': 100.0 if total_issues == 0 else 0.0,
+        },
+        'differences': differences,
+        'missing_in_precinct': missing_in_precinct,
+        'missing_in_county': missing_in_county,
+    }
+
+    # Output results
+    if output_format in ['cli', 'both']:
+        output_text = _format_county_precinct_output(results, verbose)
+        print(output_text)
+
+        if output_file and output_format == 'cli':
+            with open(output_file, 'w') as f:
+                f.write(output_text)
+            if verbose:
+                print(f"\nReport saved to: {output_file}")
+
+    if output_format in ['web', 'both']:
+        if not output_file:
+            output_file = f'county_precinct_comparison_{county_lower}.html'
+        html_output = _format_county_precinct_web_output(results)
+        with open(output_file, 'w') as f:
+            f.write(html_output)
+        if verbose:
+            print(f"\nWeb report saved to: {output_file}")
+
+    return results
+
+
+def _format_county_precinct_output(
+    results: Dict[str, Any],
+    verbose: bool = True
+) -> str:
+    """
+    Format county vs precinct comparison results for CLI output.
+
+    Args:
+        results: Comparison results dictionary
+        verbose: Include detailed output
+
+    Returns:
+        Formatted string for terminal output
+    """
+    lines = []
+
+    # Header
+    lines.append("\nCounty vs Precinct Totals Comparison Results")
+    lines.append("=" * 70)
+    lines.append("")
+
+    # Summary
+    summary = results['summary']
+    metadata = results['metadata']
+
+    lines.append(f"Election: {metadata['election_prefix']}")
+    lines.append(f"County: {metadata['county_name']}")
+    lines.append("")
+
+    lines.append(f"County file rows: {metadata['county_rows']:,}")
+    lines.append(f"Precinct file rows: {metadata['precinct_rows']:,}")
+    lines.append(f"Aggregated unique rows: {metadata['aggregated_rows']:,}")
+    lines.append("")
+
+    # Results
+    if summary['total_differences'] == 0:
+        lines.append("✓ MATCH: County and precinct totals match perfectly!")
+    else:
+        lines.append(f"✗ MISMATCH: Found {summary['total_differences']} issue(s)")
+        lines.append("")
+
+        if summary['value_mismatches'] > 0:
+            lines.append(f"  Value mismatches: {summary['value_mismatches']}")
+
+        if summary['missing_in_precinct'] > 0:
+            lines.append(f"  Rows in county file but not in precinct data: {summary['missing_in_precinct']}")
+
+        if summary['missing_in_county'] > 0:
+            lines.append(f"  Rows in precinct data but not in county file: {summary['missing_in_county']}")
+
+    lines.append("")
+
+    # Detailed differences
+    if verbose and summary['value_mismatches'] > 0:
+        lines.append("Value Mismatches:")
+        lines.append("-" * 70)
+
+        for i, diff in enumerate(results['differences'][:50], 1):
+            key_str = " | ".join([f"{k}: {v}" for k, v in diff['row_key'].items()])
+            lines.append(f"\n{i}. {key_str}")
+            lines.append(f"   Vote type: {diff['vote_type']}")
+            lines.append(f"   County total:   {diff['county_total']:>10,}")
+            lines.append(f"   Precinct total: {diff['precinct_total']:>10,}")
+            lines.append(f"   Difference:     {diff['difference']:>10,}")
+
+        if summary['value_mismatches'] > 50:
+            lines.append(f"\n... and {summary['value_mismatches'] - 50} more")
+
+        lines.append("")
+
+    if verbose and summary['missing_in_precinct'] > 0:
+        lines.append(f"Rows in County File but Missing in Precinct Data ({summary['missing_in_precinct']}):")
+        lines.append("-" * 70)
+
+        for i, row in enumerate(results['missing_in_precinct'][:20], 1):
+            key_str = " | ".join([f"{k}: {v}" for k, v in row.items()])
+            lines.append(f"{i}. {key_str}")
+
+        if summary['missing_in_precinct'] > 20:
+            lines.append(f"... and {summary['missing_in_precinct'] - 20} more")
+
+        lines.append("")
+
+    if verbose and summary['missing_in_county'] > 0:
+        lines.append(f"Rows in Precinct Data but Missing in County File ({summary['missing_in_county']}):")
+        lines.append("-" * 70)
+
+        for i, row in enumerate(results['missing_in_county'][:20], 1):
+            key_str = " | ".join([f"{k}: {v}" for k, v in row.items()])
+            lines.append(f"{i}. {key_str}")
+
+        if summary['missing_in_county'] > 20:
+            lines.append(f"... and {summary['missing_in_county'] - 20} more")
+
+        lines.append("")
+
+    return "\n".join(lines)
+
+
+def _format_county_precinct_web_output(results: Dict[str, Any]) -> str:
+    """
+    Format county vs precinct comparison as an interactive HTML report.
+
+    Args:
+        results: Comparison results dictionary
+
+    Returns:
+        HTML string
+    """
+    from html import escape
+
+    metadata = results['metadata']
+    summary = results['summary']
+
+    match_class = "perfect-match" if summary['total_differences'] == 0 else "poor-match"
+    match_icon = "✓" if summary['total_differences'] == 0 else "✗"
+
+    html = f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>County vs Precinct Comparison - {escape(metadata['county_name'])}</title>
+    <style>
+        * {{
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+        }}
+
+        body {{
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            padding: 20px;
+            line-height: 1.6;
+        }}
+
+        .container {{
+            max-width: 1400px;
+            margin: 0 auto;
+            background: white;
+            border-radius: 10px;
+            box-shadow: 0 10px 40px rgba(0,0,0,0.2);
+            overflow: hidden;
+        }}
+
+        .header {{
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            padding: 30px;
+            text-align: center;
+        }}
+
+        .header h1 {{
+            font-size: 2em;
+            margin-bottom: 10px;
+        }}
+
+        .content {{
+            padding: 30px;
+        }}
+
+        .summary-cards {{
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 20px;
+            margin: 30px 0;
+        }}
+
+        .card {{
+            padding: 20px;
+            border-radius: 8px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+            text-align: center;
+        }}
+
+        .card h3 {{
+            font-size: 2.5em;
+            margin-bottom: 10px;
+        }}
+
+        .card.perfect-match {{
+            background: linear-gradient(135deg, #11998e 0%, #38ef7d 100%);
+            color: white;
+        }}
+
+        .card.poor-match {{
+            background: linear-gradient(135deg, #fa709a 0%, #fee140 100%);
+            color: white;
+        }}
+
+        .card.info {{
+            background: linear-gradient(135deg, #a8edea 0%, #fed6e3 100%);
+        }}
+
+        table {{
+            width: 100%;
+            border-collapse: collapse;
+            background: white;
+            margin: 20px 0;
+        }}
+
+        th {{
+            background: #667eea;
+            color: white;
+            padding: 15px;
+            text-align: left;
+        }}
+
+        td {{
+            padding: 12px 15px;
+            border-bottom: 1px solid #e9ecef;
+        }}
+
+        tr:hover {{
+            background: #f8f9fa;
+        }}
+
+        .mismatch {{
+            color: #e53e3e;
+            font-weight: bold;
+        }}
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>County vs Precinct Comparison</h1>
+            <p>{escape(metadata['election_prefix'])} - {escape(metadata['county_name'])} County</p>
+        </div>
+
+        <div class="content">
+            <div class="summary-cards">
+                <div class="card {match_class}">
+                    <h3>{match_icon}</h3>
+                    <p>{"Match" if summary['total_differences'] == 0 else "Mismatch"}</p>
+                </div>
+                <div class="card info">
+                    <h3>{summary['total_differences']:,}</h3>
+                    <p>Total Issues</p>
+                </div>
+                <div class="card info">
+                    <h3>{summary['value_mismatches']:,}</h3>
+                    <p>Value Mismatches</p>
+                </div>
+            </div>
+"""
+
+    if summary['value_mismatches'] > 0:
+        html += """
+            <h2>Value Mismatches</h2>
+            <table>
+                <thead>
+                    <tr>
+                        <th>Row</th>
+                        <th>Vote Type</th>
+                        <th>County Total</th>
+                        <th>Precinct Total</th>
+                        <th>Difference</th>
+                    </tr>
+                </thead>
+                <tbody>
+"""
+        for diff in results['differences'][:500]:
+            key_str = ' | '.join([f"{k}: {v}" for k, v in diff['row_key'].items()])
+            html += f"""
+                    <tr>
+                        <td>{escape(key_str)}</td>
+                        <td>{escape(diff['vote_type'])}</td>
+                        <td>{diff['county_total']:,}</td>
+                        <td>{diff['precinct_total']:,}</td>
+                        <td class="mismatch">{diff['difference']:+,}</td>
+                    </tr>
+"""
+        html += """
+                </tbody>
+            </table>
+"""
+
+    if summary['total_differences'] == 0:
+        html += """
+            <div style="text-align: center; padding: 40px;">
+                <h2>🎉 Perfect Match!</h2>
+                <p>County and precinct totals match perfectly.</p>
+            </div>
+"""
+
+    html += """
+        </div>
+    </div>
+</body>
+</html>
+"""
+
+    return html
+
+
 if __name__ == '__main__':
     # Example usage
     print("OpenElections Statewide Precinct Results Generator")
