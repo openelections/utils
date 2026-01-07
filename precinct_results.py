@@ -2954,6 +2954,14 @@ def _format_county_precinct_web_output(results: Dict[str, Any]) -> str:
                     <h3>{summary['value_mismatches']:,}</h3>
                     <p>Value Mismatches</p>
                 </div>
+                <div class="card info">
+                    <h3>{summary['missing_in_precinct']:,}</h3>
+                    <p>Missing in Precinct</p>
+                </div>
+                <div class="card info">
+                    <h3>{summary['missing_in_county']:,}</h3>
+                    <p>Missing in County</p>
+                </div>
             </div>
 """
 
@@ -2981,6 +2989,72 @@ def _format_county_precinct_web_output(results: Dict[str, Any]) -> str:
                         <td>{diff['county_total']:,}</td>
                         <td>{diff['precinct_total']:,}</td>
                         <td class="mismatch">{diff['difference']:+,}</td>
+                    </tr>
+"""
+        html += """
+                </tbody>
+            </table>
+"""
+
+    if summary['missing_in_precinct'] > 0:
+        html += """
+            <h2>Rows in County File but Missing in Precinct Data</h2>
+            <table>
+                <thead>
+                    <tr>
+                        <th>#</th>
+                        <th>Row Details</th>
+                    </tr>
+                </thead>
+                <tbody>
+"""
+        for i, row in enumerate(results['missing_in_precinct'][:100], 1):
+            key_str = ' | '.join([f"{k}: {v}" for k, v in row.items()])
+            html += f"""
+                    <tr>
+                        <td>{i}</td>
+                        <td>{escape(key_str)}</td>
+                    </tr>
+"""
+        if summary['missing_in_precinct'] > 100:
+            html += f"""
+                    <tr>
+                        <td colspan="2" style="text-align: center; font-style: italic;">
+                            ... and {summary['missing_in_precinct'] - 100} more
+                        </td>
+                    </tr>
+"""
+        html += """
+                </tbody>
+            </table>
+"""
+
+    if summary['missing_in_county'] > 0:
+        html += """
+            <h2>Rows in Precinct Data but Missing in County File</h2>
+            <table>
+                <thead>
+                    <tr>
+                        <th>#</th>
+                        <th>Row Details</th>
+                    </tr>
+                </thead>
+                <tbody>
+"""
+        for i, row in enumerate(results['missing_in_county'][:100], 1):
+            key_str = ' | '.join([f"{k}: {v}" for k, v in row.items()])
+            html += f"""
+                    <tr>
+                        <td>{i}</td>
+                        <td>{escape(key_str)}</td>
+                    </tr>
+"""
+        if summary['missing_in_county'] > 100:
+            html += f"""
+                    <tr>
+                        <td colspan="2" style="text-align: center; font-style: italic;">
+                            ... and {summary['missing_in_county'] - 100} more
+                        </td>
                     </tr>
 """
         html += """
